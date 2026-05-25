@@ -10,8 +10,11 @@ export const RADIUS_OPTIONS = [500, 1000, 2000, 3000, 5000] as const;
 
 export type RadiusM = (typeof RADIUS_OPTIONS)[number];
 
-export const AUTH_REQUIRED_MESSAGE =
-  "ログインが必要です。ダッシュボードからログインしてください。";
+export const TOKEN_AUTH_EXPIRED_MESSAGE =
+  "認証が切れています。ダッシュボードから再度ツールを開いてください。";
+
+/** @deprecated トークン認証では TOKEN_AUTH_EXPIRED_MESSAGE を使用 */
+export const AUTH_REQUIRED_MESSAGE = TOKEN_AUTH_EXPIRED_MESSAGE;
 
 export const INSUFFICIENT_CREDIT_MESSAGE =
   "クレジットが不足しています。ダッシュボードからクレジットを追加してください。";

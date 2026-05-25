@@ -1,20 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthUser } from "@/lib/auth";
 import {
   API_ERROR_MESSAGE,
-  AUTH_REQUIRED_MESSAGE,
   CREDIT_CONSUME_FAILED_MESSAGE,
-  GOOGLE_MAP_SEARCH_CREDIT_COST,
   INSUFFICIENT_CREDIT_MESSAGE,
   MAX_RESULTS,
   NO_NEW_RESULTS_MESSAGE,
   RADIUS_OPTIONS,
+  TOKEN_AUTH_EXPIRED_MESSAGE,
 } from "@/lib/constants";
 import {
   consumeDashboardCredits,
   DashboardCreditsError,
-  fetchDashboardBalance,
+  getAccessTokenFromRequest,
   hasEnoughCredit,
+  verifyToolAccessToken,
 } from "@/lib/dashboardCredits";
 import {
   geocodeArea,
@@ -104,12 +103,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const user = await getAuthUser(request);
-  if (!user) {
+  const accessToken = getAccessTokenFromRequest(request);
+  if (!accessToken) {
     return jsonResponse(
       {
         status: "error",
-        message: AUTH_REQUIRED_MESSAGE,
+        message: TOKEN_AUTH_EXPIRED_MESSAGE,
         results: [],
         copyText: "",
         code: "unauthorized",
@@ -118,42 +117,37 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const userId = user.id;
+  let verifyResult;
+  try {
+    verifyResult = await verifyToolAccessToken(accessToken);
+  } catch (err) {
+    console.error("トークン検証エラー:", err);
+    const message =
+      err instanceof DashboardCreditsError
+        ? err.message
+        : TOKEN_AUTH_EXPIRED_MESSAGE;
+    return jsonResponse(
+      {
+        status: "error",
+        message,
+        results: [],
+        copyText: "",
+        code: "unauthorized",
+      },
+      err instanceof DashboardCreditsError ? err.status : 401
+    );
+  }
+
+  const userId = verifyResult.user.id;
+  const creditCost = verifyResult.tool.credit_cost;
+  const currentCredit = verifyResult.credit;
+
   const area = body.area!.trim();
   const keyword1 = body.keyword1!.trim();
   const keyword2 = body.keyword2?.trim() || null;
   const radiusM = body.radiusM!;
 
-  let currentCredit: number;
-  try {
-    currentCredit = await fetchDashboardBalance(request);
-  } catch (err) {
-    console.error("ダッシュボード残高確認エラー:", err);
-    if (err instanceof DashboardCreditsError && err.status === 401) {
-      return jsonResponse(
-        {
-          status: "error",
-          message: AUTH_REQUIRED_MESSAGE,
-          results: [],
-          copyText: "",
-          code: "unauthorized",
-        },
-        401
-      );
-    }
-    return jsonResponse(
-      {
-        status: "error",
-        message: API_ERROR_MESSAGE,
-        results: [],
-        copyText: "",
-        code: "api_error",
-      },
-      500
-    );
-  }
-
-  if (!hasEnoughCredit(currentCredit)) {
+  if (!hasEnoughCredit(currentCredit, creditCost)) {
     return jsonResponse(
       {
         status: "error",
@@ -283,7 +277,7 @@ export async function POST(request: NextRequest) {
     let creditAfter: number;
     try {
       const consumeResult = await consumeDashboardCredits(
-        request,
+        accessToken,
         searchRequestId
       );
       creditAfter = consumeResult.credit;
@@ -296,7 +290,7 @@ export async function POST(request: NextRequest) {
       return jsonResponse(
         {
           status: "error",
-          message: `${CREDIT_CONSUME_FAILED_MESSAGE}（${detail}）`,
+          message: detail,
           results: [],
           copyText: "",
           credit: currentCredit,
@@ -307,7 +301,7 @@ export async function POST(request: NextRequest) {
     }
 
     const copyText = buildTsv(results);
-    const message = `${results.length}件の営業リストを作成しました（${GOOGLE_MAP_SEARCH_CREDIT_COST} Credit消費）`;
+    const message = `${results.length}件の営業リストを作成しました（${creditCost} Credit消費）`;
 
     return jsonResponse({
       status: "success",

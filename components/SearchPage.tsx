@@ -1,25 +1,37 @@
 "use client";
 
-import CreditBar from "@/components/CreditBar";
 import CopyTsvButton from "@/components/CopyTsvButton";
 import ResultsTable from "@/components/ResultsTable";
 import SearchForm, { type SearchFormValues } from "@/components/SearchForm";
+import ToolAuthBar from "@/components/ToolAuthBar";
 import {
   API_ERROR_MESSAGE,
-  AUTH_REQUIRED_MESSAGE,
   CREDIT_CONSUME_FAILED_MESSAGE,
-  GOOGLE_MAP_SEARCH_CREDIT_COST,
   INSUFFICIENT_CREDIT_MESSAGE,
+  NO_NEW_RESULTS_MESSAGE,
+  TOKEN_AUTH_EXPIRED_MESSAGE,
 } from "@/lib/constants";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  captureAccessTokenFromUrl,
+  clearStoredAccessToken,
+  getStoredAccessToken,
+} from "@/lib/toolToken";
+import type { ToolVerifyResult } from "@/lib/toolVerify";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
 import { useCallback, useEffect, useState } from "react";
+
+function authHeaders(token: string): HeadersInit {
+  return {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+}
 
 export default function SearchPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [credit, setCredit] = useState<number | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [verify, setVerify] = useState<ToolVerifyResult | null>(null);
   const [results, setResults] = useState<PlaceSearchResult[]>([]);
   const [copyText, setCopyText] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -28,62 +40,69 @@ export default function SearchPage() {
     null
   );
 
-  const fetchCredit = useCallback(async () => {
-    try {
-      const res = await fetch("/api/user/credit", { credentials: "include" });
-      if (res.status === 401) {
-        setIsLoggedIn(false);
-        setCredit(null);
-        return;
-      }
-      if (!res.ok) {
-        console.error("クレジット取得失敗:", res.status);
-        return;
-      }
-      const data = (await res.json()) as { credit: number };
-      setIsLoggedIn(true);
-      setCredit(data.credit);
-    } catch (err) {
-      console.error("クレジット取得エラー:", err);
+  const runVerify = useCallback(async (token: string) => {
+    const res = await fetch("/api/tools/verify", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      throw new Error(data.error ?? TOKEN_AUTH_EXPIRED_MESSAGE);
     }
+
+    return (await res.json()) as ToolVerifyResult;
   }, []);
 
   useEffect(() => {
     async function init() {
       setIsAuthLoading(true);
+      setError(null);
+
       try {
-        const supabase = createSupabaseBrowserClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          setIsLoggedIn(false);
-          setCredit(null);
+        const token = captureAccessTokenFromUrl() ?? getStoredAccessToken();
+        if (!token) {
+          setAccessToken(null);
+          setVerify(null);
+          setError(TOKEN_AUTH_EXPIRED_MESSAGE);
           return;
         }
-        setIsLoggedIn(true);
-        await fetchCredit();
+
+        setAccessToken(token);
+        const verified = await runVerify(token);
+        setVerify(verified);
       } catch (err) {
-        console.error("認証初期化エラー:", err);
+        console.error("トークン検証エラー:", err);
+        clearStoredAccessToken();
+        setAccessToken(null);
+        setVerify(null);
+        setError(
+          err instanceof Error ? err.message : TOKEN_AUTH_EXPIRED_MESSAGE
+        );
       } finally {
         setIsAuthLoading(false);
       }
     }
-    init();
-  }, [fetchCredit]);
 
+    init();
+  }, [runVerify]);
+
+  const creditCost = verify?.tool.credit_cost ?? 30;
   const canSearch =
-    isLoggedIn &&
-    credit !== null &&
-    credit >= GOOGLE_MAP_SEARCH_CREDIT_COST &&
+    Boolean(accessToken && verify) &&
+    (verify?.credit ?? 0) >= creditCost &&
     !isAuthLoading;
 
   async function handleSearch(values: SearchFormValues) {
-    if (!isLoggedIn) {
-      setError(AUTH_REQUIRED_MESSAGE);
+    if (!accessToken || !verify) {
+      setError(TOKEN_AUTH_EXPIRED_MESSAGE);
       return;
     }
-    if (credit !== null && credit < GOOGLE_MAP_SEARCH_CREDIT_COST) {
+
+    if (verify.credit < creditCost) {
       setError(INSUFFICIENT_CREDIT_MESSAGE);
       return;
     }
@@ -98,8 +117,7 @@ export default function SearchPage() {
     try {
       const res = await fetch("/api/places/search", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
+        headers: authHeaders(accessToken),
         body: JSON.stringify({
           area: values.area,
           keyword1: values.keyword1,
@@ -113,21 +131,20 @@ export default function SearchPage() {
       setStatus(data.status);
       setMessage(data.message);
 
-      if (data.credit !== undefined && data.credit !== null) {
-        setCredit(data.credit);
+      if (data.credit !== undefined && data.credit !== null && verify) {
+        setVerify({ ...verify, credit: data.credit });
       }
 
       if (res.status === 401 || data.code === "unauthorized") {
-        setIsLoggedIn(false);
-        setError(AUTH_REQUIRED_MESSAGE);
+        clearStoredAccessToken();
+        setAccessToken(null);
+        setVerify(null);
+        setError(TOKEN_AUTH_EXPIRED_MESSAGE);
         return;
       }
 
       if (res.status === 402 || data.code === "insufficient_credit") {
-        setError(INSUFFICIENT_CREDIT_MESSAGE);
-        if (data.credit !== undefined && data.credit !== null) {
-          setCredit(data.credit);
-        }
+        setError(data.message || INSUFFICIENT_CREDIT_MESSAGE);
         return;
       }
 
@@ -148,8 +165,13 @@ export default function SearchPage() {
       setResults(data.results);
       setCopyText(data.copyText);
 
-      if (data.status === "success") {
-        await fetchCredit();
+      if (data.status === "success" && accessToken) {
+        try {
+          const refreshed = await runVerify(accessToken);
+          setVerify(refreshed);
+        } catch (err) {
+          console.error("残高再取得エラー:", err);
+        }
       }
 
       if (data.status === "no_results") {
@@ -166,6 +188,10 @@ export default function SearchPage() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:py-10">
+      <div className="mb-4">
+        <ToolAuthBar verify={verify} isLoading={isAuthLoading} />
+      </div>
+
       <header className="mb-8 rounded-2xl border border-blue-100 bg-white p-6 shadow-sm sm:p-8">
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-600">
           営業リスト作成ツール
@@ -186,27 +212,18 @@ export default function SearchPage() {
         </div>
       </header>
 
-      <div className="mb-6">
-        <CreditBar
-          credit={credit}
-          isLoggedIn={isLoggedIn}
-          isLoading={isAuthLoading}
-        />
-      </div>
-
-      {!isAuthLoading && !isLoggedIn && (
+      {!isAuthLoading && !verify && (
         <div
           role="alert"
           className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
         >
-          {AUTH_REQUIRED_MESSAGE}
+          {error ?? TOKEN_AUTH_EXPIRED_MESSAGE}
         </div>
       )}
 
       {!isAuthLoading &&
-        isLoggedIn &&
-        credit !== null &&
-        credit < GOOGLE_MAP_SEARCH_CREDIT_COST && (
+        verify &&
+        verify.credit < creditCost && (
           <div
             role="alert"
             className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
@@ -219,7 +236,7 @@ export default function SearchPage() {
         onSearch={handleSearch}
         isLoading={isLoading}
         disabled={!canSearch || isLoading}
-        creditCost={GOOGLE_MAP_SEARCH_CREDIT_COST}
+        creditCost={creditCost}
       />
 
       {isLoading && (
@@ -229,7 +246,7 @@ export default function SearchPage() {
         </div>
       )}
 
-      {error && (
+      {error && verify && (
         <div
           role="alert"
           className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
@@ -240,7 +257,7 @@ export default function SearchPage() {
 
       {status === "no_results" && message && !error && (
         <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          {message}
+          {message || NO_NEW_RESULTS_MESSAGE}
         </div>
       )}
 

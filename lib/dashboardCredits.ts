@@ -1,6 +1,11 @@
 import { NextRequest } from "next/server";
-import { GOOGLE_MAP_SEARCH_CREDIT_COST, TOOL_KEY } from "@/lib/constants";
-import { createSupabaseRouteClient } from "@/lib/supabase/route";
+import { TOOL_KEY } from "@/lib/constants";
+import {
+  extractErrorFromBody,
+  getBearerTokenFromHeader,
+  parseToolVerifyResponse,
+  type ToolVerifyResult,
+} from "@/lib/toolVerify";
 
 export class InsufficientCreditError extends Error {
   constructor() {
@@ -11,10 +16,13 @@ export class InsufficientCreditError extends Error {
 
 export class DashboardCreditsError extends Error {
   status: number;
-  constructor(message: string, status = 500) {
+  code?: string;
+
+  constructor(message: string, status = 500, code?: string) {
     super(message);
     this.name = "DashboardCreditsError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -30,12 +38,18 @@ export function getToolKey(): string {
   return process.env.NEXT_PUBLIC_TOOL_KEY?.trim() || TOOL_KEY;
 }
 
+export function getAccessTokenFromRequest(
+  request: NextRequest
+): string | null {
+  return getBearerTokenFromHeader(request.headers.get("authorization"));
+}
+
 function parseCreditFromBody(data: unknown): number {
   if (typeof data !== "object" || data === null) {
     throw new DashboardCreditsError("残高レスポンスの形式が不正です");
   }
   const obj = data as Record<string, unknown>;
-  const candidates = [obj.credit, obj.balance, obj.credit_balance];
+  const candidates = [obj.credit, obj.balance, obj.credit_after, obj.credit_balance];
   for (const value of candidates) {
     if (typeof value === "number" && !Number.isNaN(value)) {
       return value;
@@ -44,49 +58,17 @@ function parseCreditFromBody(data: unknown): number {
   throw new DashboardCreditsError("残高レスポンスに credit が含まれていません");
 }
 
-async function buildAuthHeaders(
-  request: NextRequest
-): Promise<Record<string, string>> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  const cookie = request.headers.get("cookie");
-  if (cookie) {
-    headers.Cookie = cookie;
-  }
-
-  const authHeader = request.headers.get("authorization");
-  if (authHeader) {
-    headers.Authorization = authHeader;
-  } else {
-    try {
-      const supabase = createSupabaseRouteClient(request);
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        headers.Authorization = `Bearer ${session.access_token}`;
-      }
-    } catch (err) {
-      console.error("セッション取得エラー:", err);
-    }
-  }
-
-  return headers;
-}
-
-/** 共通ダッシュボード GET /api/credits/balance */
-export async function fetchDashboardBalance(
-  request: NextRequest
-): Promise<number> {
+/** 共通ダッシュボード GET /api/tools/token/verify */
+export async function verifyToolAccessToken(
+  accessToken: string
+): Promise<ToolVerifyResult> {
   const baseUrl = getDashboardBaseUrl();
-  const headers = await buildAuthHeaders(request);
-  delete headers["Content-Type"];
 
-  const res = await fetch(`${baseUrl}/api/credits/balance`, {
+  const res = await fetch(`${baseUrl}/api/tools/token/verify`, {
     method: "GET",
-    headers,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
     cache: "no-store",
   });
 
@@ -97,26 +79,37 @@ export async function fetchDashboardBalance(
     body = null;
   }
 
-  if (res.status === 401) {
-    throw new DashboardCreditsError("認証が必要です", 401);
-  }
-
   if (!res.ok) {
-    const msg =
-      typeof body === "object" &&
-      body !== null &&
-      "message" in body &&
-      typeof (body as { message: unknown }).message === "string"
-        ? (body as { message: string }).message
-        : "クレジット残高の取得に失敗しました";
-    throw new DashboardCreditsError(msg, res.status);
+    const code =
+      typeof body === "object" && body !== null && "code" in body
+        ? String((body as { code: unknown }).code)
+        : undefined;
+    const message = extractErrorFromBody(
+      body,
+      "トークンの検証に失敗しました"
+    );
+    throw new DashboardCreditsError(message, res.status, code);
   }
 
-  return parseCreditFromBody(body);
+  return parseToolVerifyResponse(body);
 }
 
-export function hasEnoughCredit(credit: number): boolean {
-  return credit >= GOOGLE_MAP_SEARCH_CREDIT_COST;
+export async function verifyToolAccessTokenFromRequest(
+  request: NextRequest
+): Promise<ToolVerifyResult> {
+  const token = getAccessTokenFromRequest(request);
+  if (!token) {
+    throw new DashboardCreditsError(
+      "認証トークンがありません",
+      401,
+      "UNAUTHORIZED"
+    );
+  }
+  return verifyToolAccessToken(token);
+}
+
+export function hasEnoughCredit(credit: number, creditCost: number): boolean {
+  return credit >= creditCost;
 }
 
 type ConsumeResult = {
@@ -125,15 +118,17 @@ type ConsumeResult = {
 
 /** 共通ダッシュボード POST /api/credits/consume（credit_cost は送らない） */
 export async function consumeDashboardCredits(
-  request: NextRequest,
+  accessToken: string,
   externalRequestId: string
 ): Promise<ConsumeResult> {
   const baseUrl = getDashboardBaseUrl();
-  const headers = await buildAuthHeaders(request);
 
   const res = await fetch(`${baseUrl}/api/credits/consume`, {
     method: "POST",
-    headers,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
     cache: "no-store",
     body: JSON.stringify({
       tool_key: getToolKey(),
@@ -149,14 +144,15 @@ export async function consumeDashboardCredits(
   }
 
   if (!res.ok) {
-    const msg =
-      typeof body === "object" &&
-      body !== null &&
-      "message" in body &&
-      typeof (body as { message: unknown }).message === "string"
-        ? (body as { message: string }).message
-        : "クレジットの消費に失敗しました";
-    throw new DashboardCreditsError(msg, res.status);
+    const code =
+      typeof body === "object" && body !== null && "code" in body
+        ? String((body as { code: unknown }).code)
+        : undefined;
+    const message = extractErrorFromBody(
+      body,
+      "クレジットの消費に失敗しました"
+    );
+    throw new DashboardCreditsError(message, res.status, code);
   }
 
   return { credit: parseCreditFromBody(body) };

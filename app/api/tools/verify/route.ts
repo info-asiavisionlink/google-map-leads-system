@@ -6,35 +6,29 @@ import {
   verifyToolAccessToken,
 } from "@/lib/dashboardCredits";
 
-/** verify 結果からクレジット情報のみ返す（後方互換） */
 export async function GET(request: NextRequest) {
   const token = getAccessTokenFromRequest(request);
 
   if (!token) {
     return NextResponse.json(
-      { error: TOKEN_AUTH_EXPIRED_MESSAGE, credit: null },
+      { error: TOKEN_AUTH_EXPIRED_MESSAGE },
       { status: 401 }
     );
   }
 
   try {
     const result = await verifyToolAccessToken(token);
-    return NextResponse.json({
-      credit: result.credit,
-      searchCreditCost: result.tool.credit_cost,
-      user: result.user,
-      tool: result.tool,
-    });
+    return NextResponse.json(result);
   } catch (err) {
-    console.error("GET /api/user/credit エラー:", err);
+    console.error("GET /api/tools/verify エラー:", err);
     if (err instanceof DashboardCreditsError) {
       return NextResponse.json(
-        { error: err.message, credit: null },
+        { error: err.message, code: err.code },
         { status: err.status }
       );
     }
     return NextResponse.json(
-      { error: TOKEN_AUTH_EXPIRED_MESSAGE, credit: null },
+      { error: TOKEN_AUTH_EXPIRED_MESSAGE },
       { status: 500 }
     );
   }
