@@ -1,13 +1,25 @@
 "use client";
 
+import CreditBar from "@/components/CreditBar";
 import CopyTsvButton from "@/components/CopyTsvButton";
 import ResultsTable from "@/components/ResultsTable";
 import SearchForm, { type SearchFormValues } from "@/components/SearchForm";
+import {
+  API_ERROR_MESSAGE,
+  AUTH_REQUIRED_MESSAGE,
+  CREDIT_CONSUME_FAILED_MESSAGE,
+  GOOGLE_MAP_SEARCH_CREDIT_COST,
+  INSUFFICIENT_CREDIT_MESSAGE,
+} from "@/lib/constants";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export default function SearchPage() {
   const [isLoading, setIsLoading] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [credit, setCredit] = useState<number | null>(null);
   const [results, setResults] = useState<PlaceSearchResult[]>([]);
   const [copyText, setCopyText] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -16,7 +28,66 @@ export default function SearchPage() {
     null
   );
 
+  const fetchCredit = useCallback(async () => {
+    try {
+      const res = await fetch("/api/user/credit", { credentials: "include" });
+      if (res.status === 401) {
+        setIsLoggedIn(false);
+        setCredit(null);
+        return;
+      }
+      if (!res.ok) {
+        console.error("クレジット取得失敗:", res.status);
+        return;
+      }
+      const data = (await res.json()) as { credit: number };
+      setIsLoggedIn(true);
+      setCredit(data.credit);
+    } catch (err) {
+      console.error("クレジット取得エラー:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    async function init() {
+      setIsAuthLoading(true);
+      try {
+        const supabase = createSupabaseBrowserClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) {
+          setIsLoggedIn(false);
+          setCredit(null);
+          return;
+        }
+        setIsLoggedIn(true);
+        await fetchCredit();
+      } catch (err) {
+        console.error("認証初期化エラー:", err);
+      } finally {
+        setIsAuthLoading(false);
+      }
+    }
+    init();
+  }, [fetchCredit]);
+
+  const canSearch =
+    isLoggedIn &&
+    credit !== null &&
+    credit >= GOOGLE_MAP_SEARCH_CREDIT_COST &&
+    !isAuthLoading;
+
   async function handleSearch(values: SearchFormValues) {
+    if (!isLoggedIn) {
+      setError(AUTH_REQUIRED_MESSAGE);
+      return;
+    }
+    if (credit !== null && credit < GOOGLE_MAP_SEARCH_CREDIT_COST) {
+      setError(INSUFFICIENT_CREDIT_MESSAGE);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     setMessage(null);
@@ -28,6 +99,7 @@ export default function SearchPage() {
       const res = await fetch("/api/places/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           area: values.area,
           keyword1: values.keyword1,
@@ -41,20 +113,51 @@ export default function SearchPage() {
       setStatus(data.status);
       setMessage(data.message);
 
-      if (data.status === "error") {
-        setError(data.message);
+      if (data.credit !== undefined && data.credit !== null) {
+        setCredit(data.credit);
+      }
+
+      if (res.status === 401 || data.code === "unauthorized") {
+        setIsLoggedIn(false);
+        setError(AUTH_REQUIRED_MESSAGE);
+        return;
+      }
+
+      if (res.status === 402 || data.code === "insufficient_credit") {
+        setError(INSUFFICIENT_CREDIT_MESSAGE);
+        if (data.credit !== undefined && data.credit !== null) {
+          setCredit(data.credit);
+        }
+        return;
+      }
+
+      if (res.status === 500 && data.code === "consume_failed") {
+        setError(data.message || CREDIT_CONSUME_FAILED_MESSAGE);
+        setResults([]);
+        setCopyText("");
+        return;
+      }
+
+      if (data.status === "error" || !res.ok) {
+        setError(
+          data.code === "api_error" ? API_ERROR_MESSAGE : data.message
+        );
         return;
       }
 
       setResults(data.results);
       setCopyText(data.copyText);
 
+      if (data.status === "success") {
+        await fetchCredit();
+      }
+
       if (data.status === "no_results") {
         setError(null);
       }
     } catch (err) {
       console.error("検索リクエストエラー:", err);
-      setError("通信エラーが発生しました。しばらくしてから再試行してください。");
+      setError(API_ERROR_MESSAGE);
       setStatus("error");
     } finally {
       setIsLoading(false);
@@ -83,7 +186,41 @@ export default function SearchPage() {
         </div>
       </header>
 
-      <SearchForm onSearch={handleSearch} isLoading={isLoading} />
+      <div className="mb-6">
+        <CreditBar
+          credit={credit}
+          isLoggedIn={isLoggedIn}
+          isLoading={isAuthLoading}
+        />
+      </div>
+
+      {!isAuthLoading && !isLoggedIn && (
+        <div
+          role="alert"
+          className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+        >
+          {AUTH_REQUIRED_MESSAGE}
+        </div>
+      )}
+
+      {!isAuthLoading &&
+        isLoggedIn &&
+        credit !== null &&
+        credit < GOOGLE_MAP_SEARCH_CREDIT_COST && (
+          <div
+            role="alert"
+            className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+          >
+            {INSUFFICIENT_CREDIT_MESSAGE}
+          </div>
+        )}
+
+      <SearchForm
+        onSearch={handleSearch}
+        isLoading={isLoading}
+        disabled={!canSearch || isLoading}
+        creditCost={GOOGLE_MAP_SEARCH_CREDIT_COST}
+      />
 
       {isLoading && (
         <div className="mt-6 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">

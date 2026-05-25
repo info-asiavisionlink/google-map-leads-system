@@ -75,3 +75,27 @@ alter table search_results add column if not exists reviews_text text;
 alter table search_results add column if not exists editorial_summary text;
 alter table search_results add column if not exists price_level text;
 alter table search_results add column if not exists photo_names text;
+
+-- Googleマップツール利用履歴（共通ダッシュボード連携）
+create table if not exists tool_usage_logs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null,
+  tool_key text not null,
+  tool_name text not null,
+  credit_cost integer not null default 0,
+  credit_before integer not null,
+  credit_after integer not null,
+  status text not null,
+  message text,
+  search_request_id uuid references search_requests (id) on delete set null,
+  created_at timestamp with time zone not null default now()
+);
+
+create index if not exists idx_tool_usage_logs_user_id on tool_usage_logs (user_id);
+create index if not exists idx_tool_usage_logs_created_at on tool_usage_logs (created_at desc);
+create index if not exists idx_tool_usage_logs_tool_key on tool_usage_logs (tool_key);
+
+-- user_id は Supabase Auth の user.id（uuid 文字列）を text で保存
+comment on column search_requests.user_id is 'Supabase Auth user.id';
+comment on column search_results.user_id is 'Supabase Auth user.id';
+comment on column excluded_places.user_id is 'Supabase Auth user.id';

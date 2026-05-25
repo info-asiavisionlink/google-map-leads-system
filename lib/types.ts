@@ -27,4 +27,10 @@ export type SearchApiResponse = {
   message: string;
   results: PlaceSearchResult[];
   copyText: string;
+  credit?: number | null;
+  code?:
+    | "unauthorized"
+    | "insufficient_credit"
+    | "api_error"
+    | "consume_failed";
 };

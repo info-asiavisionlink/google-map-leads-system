@@ -1,121 +1,121 @@
-# Googleマップ企業リスト作成システム（MVP）
+# Googleマップ営業リスト作成システム
 
-Google Maps API を使い、エリア・キーワード・半径を指定して店舗・企業情報を最大20件取得し、一覧表示と TSV コピーができる Web アプリです。
+Google Maps API で店舗情報を取得し、営業リストとして一覧表示・TSV コピーができる Web アプリです。
 
-## プロジェクト概要
+## プロジェクト構成
 
-- **フロント**: Next.js App Router + TypeScript + Tailwind CSS
-- **バックエンド**: Next.js API Routes（サーバー側で Google Maps API / Supabase を呼び出し）
-- **DB**: Supabase（検索履歴・結果・除外 place_id）
-- **デプロイ**: Vercel 前提
-
-認証・決済・外部連携は MVP では含みません。仮ユーザー ID（`demo-user`）で動作します。
-
-## 使用 API
-
-| API | 用途 |
+| 役割 | 説明 |
 | --- | --- |
-| Geocoding API | エリア名から緯度・経度を取得 |
-| Places API Text Search | キーワードと位置・半径で店舗候補を検索 |
-| Places API Details | 営業時間・電話・Web サイトなど詳細を取得 |
+| **共通ダッシュボード**（別プロジェクト） | ログイン・ユーザー管理・クレジット残高・消費 |
+| **本ツール**（このリポジトリ） | Google Maps 検索・Googleマップ専用 Supabase への保存 |
 
-Google Cloud Console で上記 API を有効化し、課金・API キー制限（HTTP リファラー / IP 等）を設定してください。
+本ツールは **`profiles.credit` を直接参照・更新しません**。残高確認・消費は共通ダッシュボードの API 経由です。
+
+## 認証
+
+- **パスワードは扱いません**（ダッシュボード側の Supabase Auth セッションを利用）
+- 同一親ドメイン: `credentials: "include"` で Cookie を転送
+- 別ドメイン: サーバーが Supabase セッションから `Authorization: Bearer <access_token>` を付与
+
+## クレジット
+
+- 1回の検索成功（新規1件以上取得・保存成功・消費 API 成功）で **30 Credit** 消費
+- 消費量の表示用定数: `lib/constants.ts` の `GOOGLE_MAP_SEARCH_CREDIT_COST`
+- **実際の減算額**はダッシュボード側が `tools` テーブルから決定（本ツールから `credit_cost` は送らない）
+
+### 共通ダッシュボード API
+
+| メソッド | パス |
+| --- | --- |
+| GET | `{DASHBOARD_BASE_URL}/api/credits/balance` |
+| POST | `{DASHBOARD_BASE_URL}/api/credits/consume` |
+
+消費リクエスト body:
+
+```json
+{
+  "tool_key": "google_map_leads",
+  "external_request_id": "{search_request_id}"
+}
+```
+
+`external_request_id` に `search_requests.id` を渡し、二重消費を防止します。
 
 ## 必要な環境変数
 
-`.env.local` に以下を設定します（値は空のままコミットしないでください）。
+`.env.local`（GitHub に上げない）:
 
 ```env
 GOOGLE_MAPS_API_KEY=
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+NEXT_PUBLIC_DASHBOARD_BASE_URL=
+NEXT_PUBLIC_TOOL_KEY=
 ```
 
-- `GOOGLE_MAPS_API_KEY` … サーバー側のみ（API Route / `lib/googleMaps.ts`）
-- `SUPABASE_SERVICE_ROLE_KEY` … **サーバー側のみ**。クライアントコンポーネントや `page.tsx` へ渡さないこと
-- `NEXT_PUBLIC_*` … 将来のクライアント用。MVP では主に URL 参照用
-
-テンプレートは `.env.example` をコピーして作成してください。
+- `NEXT_PUBLIC_DASHBOARD_BASE_URL` … 共通ダッシュボードのオリジン（例: `https://dashboard.example.com`）
+- `NEXT_PUBLIC_TOOL_KEY` … 省略時は `google_map_leads`
+- `SUPABASE_SERVICE_ROLE_KEY` … **Googleマップ専用 Supabase** のみ（検索履歴保存用）
 
 ```bash
 cp .env.example .env.local
 ```
 
-## Supabase SQL の実行方法
+## Googleマップ専用 Supabase SQL
 
-1. [Supabase](https://supabase.com/) でプロジェクトを作成
-2. ダッシュボードの **SQL Editor** を開く
-3. リポジトリ内の `supabase/schema.sql` の内容を貼り付けて実行
-4. `.env.local` に Project URL と API キーを設定
+`supabase/schema.sql` を **Googleマップ専用** Supabase プロジェクトで実行してください。
 
-## ローカル起動方法
+主なテーブル:
+
+- `search_requests`
+- `search_results`
+- `excluded_places`（`user_id` + `place_id` ユニーク）
+
+`tool_usage_logs` は本ツールでは使用しません（クレジット履歴はダッシュボード側）。
+
+## ローカル起動
 
 ```bash
 npm install
 cp .env.example .env.local
-# .env.local に実際の値を入力
 npm run dev
 ```
 
-ブラウザで [http://localhost:3000](http://localhost:3000) を開きます。
-
 ## 動作確認手順
 
-1. Supabase で `schema.sql` を実行済みであること
-2. `.env.local` に Google Maps API キーと Supabase キーを設定
-3. `npm run dev` で起動
-4. フォームに例を入力して検索  
-   - エリア: `新宿`  
-   - キーワード1: `美容室`  
-   - キーワード2: `髪質改善`（任意）  
-   - 半径: `2000m`
-5. 最大20件がテーブル表示されること
-6. 「TSVをコピー」でスプレッドシートに貼り付けできること
-7. **同じ条件で再検索**し、前回表示した店舗が出ないこと（`excluded_places`）
-8. すべて除外された場合は「新しい検索結果がありません」メッセージが表示されること
+1. ダッシュボードでログインし、Credit ≥ 30 を確認
+2. `.env.local` にダッシュボード URL・Googleマップ用 Supabase・Maps API キーを設定
+3. 本ツールを開き「現在のクレジット」がダッシュボードと一致すること
+4. 検索成功 → 結果表示・残高が 30 減ること
+5. 新規0件の再検索 → 結果なし・**Credit 消費なし**
+6. 未ログイン / 残高不足 → Google API 未実行
+7. 保存後に消費 API が失敗した場合 → **結果を表示せず**エラー表示
 
-## 注意事項
+## クレジット消費フロー（サーバー）
 
-- **API キー・秘密鍵をソースコードや GitHub に含めない**こと。必ず `.env.local` で管理し、`.env.local` は `.gitignore` に含めています
-- `SUPABASE_SERVICE_ROLE_KEY` は RLS をバイパスできる強力なキーです。Vercel の Environment Variables にのみ設定し、クライアントに露出させないでください
-- Google Maps API は従量課金です。Text Search + Details を最大20件分呼ぶため、テスト時はリクエスト数に注意してください
-- 本番では API キーにドメイン制限・API 制限を必ず設定してください
+1. 認証（Supabase Auth）
+2. ダッシュボード `GET /api/credits/balance`
+3. 残高 &lt; 30 なら終了
+4. Google Maps API 実行
+5. 重複除外後、新規0件なら終了（消費なし）
+6. Googleマップ専用 Supabase に保存
+7. ダッシュボード `POST /api/credits/consume`（`external_request_id` = `search_request_id`）
+8. 消費成功時のみ結果を JSON で返却
 
-## ディレクトリ構成（主要）
+実装: `lib/dashboardCredits.ts` / `app/api/places/search/route.ts`
+
+## セキュリティ
+
+- API キー・`service_role` をリポジトリに含めない
+- `profiles` / ダッシュボード DB への直接書き込みは行わない
+- `user_id` は Auth セッションから取得
+
+## ディレクトリ（主要）
 
 ```
-app/
-  page.tsx
-  api/places/search/route.ts
-components/
-  SearchForm.tsx
-  ResultsTable.tsx
-  CopyTsvButton.tsx
-  SearchPage.tsx
-lib/
-  constants.ts
-  googleMaps.ts
-  supabaseAdmin.ts
-  tsv.ts
-  types.ts
-supabase/
-  schema.sql
+lib/dashboardCredits.ts   # ダッシュボード API 連携
+lib/supabaseAdmin.ts      # Googleマップ専用 DB
+app/api/places/search/route.ts
+app/api/user/credit/route.ts
 ```
-
-## API
-
-`POST /api/places/search`
-
-リクエスト例:
-
-```json
-{
-  "area": "新宿",
-  "keyword1": "美容室",
-  "keyword2": "髪質改善",
-  "radiusM": 2000
-}
-```
-
-レスポンス: `status` が `success` | `no_results` | `error` の JSON（詳細は実装参照）。

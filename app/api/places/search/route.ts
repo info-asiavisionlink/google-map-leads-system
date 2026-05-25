@@ -1,5 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { DEMO_USER_ID, MAX_RESULTS, RADIUS_OPTIONS } from "@/lib/constants";
+import { getAuthUser } from "@/lib/auth";
+import {
+  API_ERROR_MESSAGE,
+  AUTH_REQUIRED_MESSAGE,
+  CREDIT_CONSUME_FAILED_MESSAGE,
+  GOOGLE_MAP_SEARCH_CREDIT_COST,
+  INSUFFICIENT_CREDIT_MESSAGE,
+  MAX_RESULTS,
+  NO_NEW_RESULTS_MESSAGE,
+  RADIUS_OPTIONS,
+} from "@/lib/constants";
+import {
+  consumeDashboardCredits,
+  DashboardCreditsError,
+  fetchDashboardBalance,
+  hasEnoughCredit,
+} from "@/lib/dashboardCredits";
 import {
   geocodeArea,
   getPlaceDetails,
@@ -16,6 +32,13 @@ type SearchBody = {
   keyword2?: string;
   radiusM?: number;
 };
+
+function jsonResponse(
+  body: SearchApiResponse,
+  status = 200
+): NextResponse<SearchApiResponse> {
+  return NextResponse.json(body, { status });
+}
 
 function validateBody(body: SearchBody): string | null {
   const area = body.area?.trim();
@@ -57,35 +80,93 @@ export async function POST(request: NextRequest) {
   try {
     body = (await request.json()) as SearchBody;
   } catch {
-    return NextResponse.json(
+    return jsonResponse(
       {
         status: "error",
         message: "リクエスト形式が不正です",
         results: [],
         copyText: "",
-      } satisfies SearchApiResponse,
-      { status: 400 }
+      },
+      400
     );
   }
 
   const validationError = validateBody(body);
   if (validationError) {
-    return NextResponse.json(
+    return jsonResponse(
       {
         status: "error",
         message: validationError,
         results: [],
         copyText: "",
-      } satisfies SearchApiResponse,
-      { status: 400 }
+      },
+      400
     );
   }
 
+  const user = await getAuthUser(request);
+  if (!user) {
+    return jsonResponse(
+      {
+        status: "error",
+        message: AUTH_REQUIRED_MESSAGE,
+        results: [],
+        copyText: "",
+        code: "unauthorized",
+      },
+      401
+    );
+  }
+
+  const userId = user.id;
   const area = body.area!.trim();
   const keyword1 = body.keyword1!.trim();
   const keyword2 = body.keyword2?.trim() || null;
   const radiusM = body.radiusM!;
-  const userId = DEMO_USER_ID;
+
+  let currentCredit: number;
+  try {
+    currentCredit = await fetchDashboardBalance(request);
+  } catch (err) {
+    console.error("ダッシュボード残高確認エラー:", err);
+    if (err instanceof DashboardCreditsError && err.status === 401) {
+      return jsonResponse(
+        {
+          status: "error",
+          message: AUTH_REQUIRED_MESSAGE,
+          results: [],
+          copyText: "",
+          code: "unauthorized",
+        },
+        401
+      );
+    }
+    return jsonResponse(
+      {
+        status: "error",
+        message: API_ERROR_MESSAGE,
+        results: [],
+        copyText: "",
+        code: "api_error",
+      },
+      500
+    );
+  }
+
+  if (!hasEnoughCredit(currentCredit)) {
+    return jsonResponse(
+      {
+        status: "error",
+        message: INSUFFICIENT_CREDIT_MESSAGE,
+        results: [],
+        copyText: "",
+        credit: currentCredit,
+        code: "insufficient_credit",
+      },
+      402
+    );
+  }
+
   const supabase = getSupabaseAdmin();
 
   try {
@@ -110,6 +191,22 @@ export async function POST(request: NextRequest) {
       if (newPlaceIds.length >= MAX_RESULTS) break;
     }
 
+    if (newPlaceIds.length === 0) {
+      return jsonResponse({
+        status: "no_results",
+        message: NO_NEW_RESULTS_MESSAGE,
+        results: [],
+        copyText: "",
+        credit: currentCredit,
+      });
+    }
+
+    const detailsList = await Promise.all(
+      newPlaceIds.map((placeId) => getPlaceDetails(placeId))
+    );
+
+    const results: PlaceSearchResult[] = detailsList.map(toPlaceSearchResult);
+
     const { data: searchRequest, error: requestInsertError } = await supabase
       .from("search_requests")
       .insert({
@@ -120,8 +217,8 @@ export async function POST(request: NextRequest) {
         radius_m: radiusM,
         latitude: geocode.latitude,
         longitude: geocode.longitude,
-        result_count: newPlaceIds.length,
-        status: newPlaceIds.length > 0 ? "completed" : "no_results",
+        result_count: results.length,
+        status: "completed",
       })
       .select("id")
       .single();
@@ -132,22 +229,6 @@ export async function POST(request: NextRequest) {
     }
 
     const searchRequestId = searchRequest.id as string;
-
-    if (newPlaceIds.length === 0) {
-      return NextResponse.json({
-        status: "no_results",
-        message:
-          "この検索範囲では新しい検索結果がありません。エリア、半径、キーワードを変更して再検索してください。",
-        results: [],
-        copyText: "",
-      } satisfies SearchApiResponse);
-    }
-
-    const detailsList = await Promise.all(
-      newPlaceIds.map((placeId) => getPlaceDetails(placeId))
-    );
-
-    const results: PlaceSearchResult[] = detailsList.map(toPlaceSearchResult);
 
     const resultRows = results.map((r) => ({
       search_request_id: searchRequestId,
@@ -199,27 +280,54 @@ export async function POST(request: NextRequest) {
       throw new Error("除外リストの保存に失敗しました");
     }
 
-    const copyText = buildTsv(results);
-    const message = `${results.length}件の営業リストを作成しました`;
+    let creditAfter: number;
+    try {
+      const consumeResult = await consumeDashboardCredits(
+        request,
+        searchRequestId
+      );
+      creditAfter = consumeResult.credit;
+    } catch (consumeErr) {
+      console.error("クレジット消費APIエラー:", consumeErr);
+      const detail =
+        consumeErr instanceof DashboardCreditsError
+          ? consumeErr.message
+          : CREDIT_CONSUME_FAILED_MESSAGE;
+      return jsonResponse(
+        {
+          status: "error",
+          message: `${CREDIT_CONSUME_FAILED_MESSAGE}（${detail}）`,
+          results: [],
+          copyText: "",
+          credit: currentCredit,
+          code: "consume_failed",
+        },
+        500
+      );
+    }
 
-    return NextResponse.json({
+    const copyText = buildTsv(results);
+    const message = `${results.length}件の営業リストを作成しました（${GOOGLE_MAP_SEARCH_CREDIT_COST} Credit消費）`;
+
+    return jsonResponse({
       status: "success",
       message,
       results,
       copyText,
-    } satisfies SearchApiResponse);
+      credit: creditAfter,
+    });
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "検索処理中にエラーが発生しました";
     console.error("POST /api/places/search エラー:", err);
-    return NextResponse.json(
+    return jsonResponse(
       {
         status: "error",
-        message,
+        message: API_ERROR_MESSAGE,
         results: [],
         copyText: "",
-      } satisfies SearchApiResponse,
-      { status: 500 }
+        credit: currentCredit,
+        code: "api_error",
+      },
+      500
     );
   }
 }
