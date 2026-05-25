@@ -12,13 +12,12 @@ import {
   TOKEN_AUTH_EXPIRED_MESSAGE,
 } from "@/lib/constants";
 import {
-  captureAccessTokenFromUrl,
   clearStoredAccessToken,
-  getStoredAccessToken,
+  resolveAccessToken,
 } from "@/lib/toolToken";
-import type { ToolVerifyResult } from "@/lib/toolVerify";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
-import { useCallback, useEffect, useState } from "react";
+import { useToolAuth } from "@/lib/useToolAuth";
+import { useState } from "react";
 
 function authHeaders(token: string): HeadersInit {
   return {
@@ -27,88 +26,50 @@ function authHeaders(token: string): HeadersInit {
   };
 }
 
+/** クライアント初回表示時に必ず token を URL から sessionStorage へ移す */
+function bootstrapAccessToken(): void {
+  resolveAccessToken();
+}
+
 export default function SearchPage() {
+  bootstrapAccessToken();
+
+  const {
+    status: authStatus,
+    accessToken,
+    verify,
+    authError,
+    creditCost,
+    canSearch,
+    refreshVerify,
+    setVerify,
+  } = useToolAuth();
+
   const [isLoading, setIsLoading] = useState(false);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [verify, setVerify] = useState<ToolVerifyResult | null>(null);
   const [results, setResults] = useState<PlaceSearchResult[]>([]);
   const [copyText, setCopyText] = useState("");
   const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [status, setStatus] = useState<SearchApiResponse["status"] | null>(
     null
   );
 
-  const runVerify = useCallback(async (token: string) => {
-    const res = await fetch("/api/tools/verify", {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-      cache: "no-store",
-    });
-
-    if (!res.ok) {
-      const data = (await res.json().catch(() => ({}))) as {
-        error?: string;
-      };
-      throw new Error(data.error ?? TOKEN_AUTH_EXPIRED_MESSAGE);
-    }
-
-    return (await res.json()) as ToolVerifyResult;
-  }, []);
-
-  useEffect(() => {
-    async function init() {
-      setIsAuthLoading(true);
-      setError(null);
-
-      try {
-        const token = captureAccessTokenFromUrl() ?? getStoredAccessToken();
-        if (!token) {
-          setAccessToken(null);
-          setVerify(null);
-          setError(TOKEN_AUTH_EXPIRED_MESSAGE);
-          return;
-        }
-
-        setAccessToken(token);
-        const verified = await runVerify(token);
-        setVerify(verified);
-      } catch (err) {
-        console.error("トークン検証エラー:", err);
-        clearStoredAccessToken();
-        setAccessToken(null);
-        setVerify(null);
-        setError(
-          err instanceof Error ? err.message : TOKEN_AUTH_EXPIRED_MESSAGE
-        );
-      } finally {
-        setIsAuthLoading(false);
-      }
-    }
-
-    init();
-  }, [runVerify]);
-
-  const creditCost = verify?.tool.credit_cost ?? 30;
-  const canSearch =
-    Boolean(accessToken && verify) &&
-    (verify?.credit ?? 0) >= creditCost &&
-    !isAuthLoading;
+  const isAuthLoading = authStatus === "loading";
+  const isAuthenticated = authStatus === "authenticated" && verify !== null;
 
   async function handleSearch(values: SearchFormValues) {
     if (!accessToken || !verify) {
-      setError(TOKEN_AUTH_EXPIRED_MESSAGE);
+      setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
       return;
     }
 
     if (verify.credit < creditCost) {
-      setError(INSUFFICIENT_CREDIT_MESSAGE);
+      setSearchError(INSUFFICIENT_CREDIT_MESSAGE);
       return;
     }
 
     setIsLoading(true);
-    setError(null);
+    setSearchError(null);
     setMessage(null);
     setStatus(null);
     setResults([]);
@@ -137,26 +98,27 @@ export default function SearchPage() {
 
       if (res.status === 401 || data.code === "unauthorized") {
         clearStoredAccessToken();
-        setAccessToken(null);
-        setVerify(null);
-        setError(TOKEN_AUTH_EXPIRED_MESSAGE);
+        setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
         return;
       }
 
       if (res.status === 402 || data.code === "insufficient_credit") {
-        setError(data.message || INSUFFICIENT_CREDIT_MESSAGE);
+        setSearchError(data.message || INSUFFICIENT_CREDIT_MESSAGE);
+        if (data.credit !== undefined && data.credit !== null && verify) {
+          setVerify({ ...verify, credit: data.credit });
+        }
         return;
       }
 
       if (res.status === 500 && data.code === "consume_failed") {
-        setError(data.message || CREDIT_CONSUME_FAILED_MESSAGE);
+        setSearchError(data.message || CREDIT_CONSUME_FAILED_MESSAGE);
         setResults([]);
         setCopyText("");
         return;
       }
 
       if (data.status === "error" || !res.ok) {
-        setError(
+        setSearchError(
           data.code === "api_error" ? API_ERROR_MESSAGE : data.message
         );
         return;
@@ -165,21 +127,16 @@ export default function SearchPage() {
       setResults(data.results);
       setCopyText(data.copyText);
 
-      if (data.status === "success" && accessToken) {
-        try {
-          const refreshed = await runVerify(accessToken);
-          setVerify(refreshed);
-        } catch (err) {
-          console.error("残高再取得エラー:", err);
-        }
+      if (data.status === "success") {
+        await refreshVerify();
       }
 
       if (data.status === "no_results") {
-        setError(null);
+        setSearchError(null);
       }
     } catch (err) {
       console.error("検索リクエストエラー:", err);
-      setError(API_ERROR_MESSAGE);
+      setSearchError(API_ERROR_MESSAGE);
       setStatus("error");
     } finally {
       setIsLoading(false);
@@ -212,25 +169,23 @@ export default function SearchPage() {
         </div>
       </header>
 
-      {!isAuthLoading && !verify && (
+      {authStatus === "unauthenticated" && (
         <div
           role="alert"
           className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
         >
-          {error ?? TOKEN_AUTH_EXPIRED_MESSAGE}
+          {authError ?? TOKEN_AUTH_EXPIRED_MESSAGE}
         </div>
       )}
 
-      {!isAuthLoading &&
-        verify &&
-        verify.credit < creditCost && (
-          <div
-            role="alert"
-            className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-          >
-            {INSUFFICIENT_CREDIT_MESSAGE}
-          </div>
-        )}
+      {isAuthenticated && verify.credit < creditCost && (
+        <div
+          role="alert"
+          className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          {INSUFFICIENT_CREDIT_MESSAGE}
+        </div>
+      )}
 
       <SearchForm
         onSearch={handleSearch}
@@ -246,16 +201,16 @@ export default function SearchPage() {
         </div>
       )}
 
-      {error && verify && (
+      {searchError && isAuthenticated && (
         <div
           role="alert"
           className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
         >
-          {error}
+          {searchError}
         </div>
       )}
 
-      {status === "no_results" && message && !error && (
+      {status === "no_results" && message && !searchError && (
         <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           {message || NO_NEW_RESULTS_MESSAGE}
         </div>

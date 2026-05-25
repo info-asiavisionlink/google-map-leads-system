@@ -18,7 +18,9 @@ export async function GET(request: NextRequest) {
 
   try {
     const result = await verifyToolAccessToken(token);
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      headers: { "Cache-Control": "no-store" },
+    });
   } catch (err) {
     console.error("GET /api/tools/verify エラー:", err);
     if (err instanceof DashboardCreditsError) {

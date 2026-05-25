@@ -1,5 +1,6 @@
+import { GOOGLE_MAP_SEARCH_CREDIT_COST } from "@/lib/constants";
+import { getSafeDashboardUrl } from "@/lib/toolToken";
 import type { ToolVerifyResult } from "@/lib/toolVerify";
-import { getDashboardUrl } from "@/lib/toolToken";
 
 type ToolAuthBarProps = {
   verify: ToolVerifyResult | null;
@@ -7,7 +8,7 @@ type ToolAuthBarProps = {
 };
 
 export default function ToolAuthBar({ verify, isLoading = false }: ToolAuthBarProps) {
-  const dashboardHref = getDashboardUrl("/dashboard");
+  const dashboardHref = getSafeDashboardUrl("/dashboard");
 
   if (isLoading) {
     return (
@@ -23,6 +24,7 @@ export default function ToolAuthBar({ verify, isLoading = false }: ToolAuthBarPr
 
   const displayName =
     verify.user.username?.trim() || verify.user.email || "ユーザー";
+  const creditCost = verify.tool.credit_cost ?? GOOGLE_MAP_SEARCH_CREDIT_COST;
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs shadow-sm">
@@ -45,10 +47,8 @@ export default function ToolAuthBar({ verify, isLoading = false }: ToolAuthBarPr
         </span>
         <span>
           この検索は{" "}
-          <span className="font-bold text-blue-700">
-            {verify.tool.credit_cost}
-          </span>{" "}
-          Credit消費します
+          <span className="font-bold text-blue-700">{creditCost}</span> Credit
+          消費します
         </span>
       </div>
     </div>

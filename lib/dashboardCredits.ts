@@ -88,10 +88,21 @@ export async function verifyToolAccessToken(
       body,
       "トークンの検証に失敗しました"
     );
+    console.error("verify API エラー:", res.status, body);
     throw new DashboardCreditsError(message, res.status, code);
   }
 
-  return parseToolVerifyResponse(body);
+  try {
+    return parseToolVerifyResponse(body);
+  } catch (parseErr) {
+    console.error("verify レスポンスパースエラー:", body, parseErr);
+    throw new DashboardCreditsError(
+      parseErr instanceof Error
+        ? parseErr.message
+        : "トークン検証レスポンスの解析に失敗しました",
+      500
+    );
+  }
 }
 
 export async function verifyToolAccessTokenFromRequest(

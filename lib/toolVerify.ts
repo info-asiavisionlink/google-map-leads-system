@@ -1,4 +1,4 @@
-import { TOOL_KEY, TOOL_NAME } from "@/lib/constants";
+import { GOOGLE_MAP_SEARCH_CREDIT_COST, TOOL_KEY, TOOL_NAME } from "@/lib/constants";
 
 export type ToolVerifyUser = {
   id: string;
@@ -28,47 +28,92 @@ export function getBearerTokenFromHeader(
 }
 
 function pickString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && !Number.isNaN(value)) {
+    return String(value);
+  }
+  return undefined;
 }
 
 function pickNumber(value: unknown): number | undefined {
   if (typeof value === "number" && !Number.isNaN(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value);
+    if (!Number.isNaN(n)) return n;
+  }
   return undefined;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 export function parseToolVerifyResponse(data: unknown): ToolVerifyResult {
-  if (typeof data !== "object" || data === null) {
+  const root = asRecord(data);
+  if (!root) {
     throw new Error("トークン検証レスポンスの形式が不正です");
   }
 
-  const root = data as Record<string, unknown>;
-  const userRaw =
-    typeof root.user === "object" && root.user !== null
-      ? (root.user as Record<string, unknown>)
-      : null;
-  const toolRaw =
-    typeof root.tool === "object" && root.tool !== null
-      ? (root.tool as Record<string, unknown>)
-      : null;
+  const payload = asRecord(root.data) ?? root;
 
-  const userId = pickString(userRaw?.id);
-  const email = pickString(userRaw?.email);
-  const credit = pickNumber(root.credit) ?? pickNumber(root.credit_balance);
-  const creditCost = pickNumber(toolRaw?.credit_cost);
+  const userRaw = asRecord(payload.user) ?? asRecord(root.user);
+  const toolRaw = asRecord(payload.tool) ?? asRecord(root.tool);
+  const profileRaw = asRecord(payload.profile) ?? asRecord(root.profile);
 
-  if (!userId || !email || credit === undefined || creditCost === undefined) {
-    throw new Error("トークン検証レスポンスに必須項目がありません");
+  const userId =
+    pickString(userRaw?.id) ??
+    pickString(userRaw?.user_id) ??
+    pickString(payload.user_id) ??
+    pickString(root.user_id);
+
+  const email =
+    pickString(userRaw?.email) ??
+    pickString(payload.email) ??
+    pickString(root.email) ??
+    pickString(profileRaw?.email) ??
+    "";
+
+  const username =
+    pickString(userRaw?.username) ??
+    pickString(userRaw?.name) ??
+    pickString(profileRaw?.username) ??
+    null;
+
+  const credit =
+    pickNumber(payload.credit) ??
+    pickNumber(root.credit) ??
+    pickNumber(profileRaw?.credit) ??
+    pickNumber(payload.credit_balance) ??
+    pickNumber(root.balance);
+
+  const creditCost =
+    pickNumber(toolRaw?.credit_cost) ??
+    pickNumber(payload.credit_cost) ??
+    pickNumber(root.credit_cost) ??
+    GOOGLE_MAP_SEARCH_CREDIT_COST;
+
+  if (!userId) {
+    throw new Error("トークン検証レスポンスに user.id がありません");
+  }
+
+  if (credit === undefined) {
+    throw new Error("トークン検証レスポンスに credit がありません");
   }
 
   return {
     user: {
       id: userId,
-      email,
-      username: pickString(userRaw?.username) ?? null,
+      email: email || "（メール未設定）",
+      username,
     },
     tool: {
-      tool_key: pickString(toolRaw?.tool_key) ?? TOOL_KEY,
-      tool_name: pickString(toolRaw?.tool_name) ?? TOOL_NAME,
+      tool_key: pickString(toolRaw?.tool_key) ?? pickString(payload.tool_key) ?? TOOL_KEY,
+      tool_name:
+        pickString(toolRaw?.tool_name) ??
+        pickString(payload.tool_name) ??
+        TOOL_NAME,
       credit_cost: creditCost,
     },
     credit,
@@ -99,6 +144,11 @@ export function extractErrorFromBody(
   const code = pickString(obj.code) ?? pickString(obj.error);
   const fromCode = mapDashboardErrorCode(code);
   if (fromCode) return fromCode;
-  const message = pickString(obj.message);
-  return message ?? fallback;
+  const message = pickString(obj.message) ?? pickString(obj.error);
+  if (message && message !== code) return message;
+  return fallback;
+}
+
+export function isAuthFailureStatus(status: number): boolean {
+  return status === 401 || status === 403;
 }

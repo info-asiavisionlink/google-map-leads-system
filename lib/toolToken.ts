@@ -3,24 +3,70 @@ export const TOOL_ACCESS_TOKEN_KEY = "tool_access_token";
 
 const TOKEN_PARAM = "access_token";
 
-/** URL から access_token を取得し sessionStorage に保存、URL から削除 */
-export function captureAccessTokenFromUrl(): string | null {
+export function readTokenFromUrl(): string | null {
   if (typeof window === "undefined") return null;
 
-  const params = new URLSearchParams(window.location.search);
-  const fromUrl = params.get(TOKEN_PARAM)?.trim();
+  const searchParams = new URLSearchParams(window.location.search);
+  const fromQuery = searchParams.get(TOKEN_PARAM)?.trim();
+  if (fromQuery) return decodeURIComponent(fromQuery);
+
+  const hash = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  if (hash) {
+    const hashParams = new URLSearchParams(hash);
+    const fromHash = hashParams.get(TOKEN_PARAM)?.trim();
+    if (fromHash) return decodeURIComponent(fromHash);
+  }
+
+  return null;
+}
+
+function buildCleanUrl(): string {
+  const searchParams = new URLSearchParams(window.location.search);
+  searchParams.delete(TOKEN_PARAM);
+
+  const hash = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const hashParams = hash ? new URLSearchParams(hash) : new URLSearchParams();
+  hashParams.delete(TOKEN_PARAM);
+
+  const query = searchParams.toString();
+  const newHash = hashParams.toString();
+  return (
+    window.location.pathname +
+    (query ? `?${query}` : "") +
+    (newHash ? `#${newHash}` : "")
+  );
+}
+
+/**
+ * URL の access_token を sessionStorage に保存し、URL から削除する。
+ * クライアント専用（ブラウザ上でのみ呼び出すこと）。
+ */
+export function resolveAccessToken(): string | null {
+  if (typeof window === "undefined") return null;
+
+  const fromUrl = readTokenFromUrl();
+  console.log("TOKEN_FROM_URL", fromUrl);
 
   if (fromUrl) {
     sessionStorage.setItem(TOOL_ACCESS_TOKEN_KEY, fromUrl);
-    params.delete(TOKEN_PARAM);
-    const query = params.toString();
-    const newUrl =
-      window.location.pathname + (query ? `?${query}` : "") + window.location.hash;
-    window.history.replaceState({}, "", newUrl);
+    const cleanedUrl = buildCleanUrl();
+    window.history.replaceState({}, "", cleanedUrl);
+    console.log("TOKEN_FROM_STORAGE", fromUrl);
     return fromUrl;
   }
 
-  return sessionStorage.getItem(TOOL_ACCESS_TOKEN_KEY);
+  const stored = sessionStorage.getItem(TOOL_ACCESS_TOKEN_KEY);
+  console.log("TOKEN_FROM_STORAGE", stored);
+  return stored;
+}
+
+/** @deprecated resolveAccessToken を使用 */
+export function captureAccessTokenFromUrl(): string | null {
+  return resolveAccessToken();
 }
 
 export function getStoredAccessToken(): string | null {
@@ -43,4 +89,12 @@ export function getDashboardBaseUrl(): string {
 
 export function getDashboardUrl(path: string): string {
   return `${getDashboardBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+export function getSafeDashboardUrl(path: string): string {
+  try {
+    return getDashboardUrl(path);
+  } catch {
+    return path;
+  }
 }
