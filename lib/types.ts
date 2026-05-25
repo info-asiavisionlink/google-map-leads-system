@@ -1,0 +1,30 @@
+export type PlaceSearchResult = {
+  placeId: string;
+  name: string;
+  address: string;
+  phoneNumber: string;
+  email: string;
+  websiteUrl: string;
+  googleMapsUrl: string;
+  rating: number | null;
+  reviewCount: number | null;
+  reviewsText: string;
+  regularOpeningHours: string;
+  closedDays: string;
+  category: string;
+  businessStatus: string;
+  primaryType: string;
+  internationalPhoneNumber: string;
+  editorialSummary: string;
+  latitude: number | null;
+  longitude: number | null;
+  priceLevel: string;
+  photoNames: string;
+};
+
+export type SearchApiResponse = {
+  status: "success" | "no_results" | "error";
+  message: string;
+  results: PlaceSearchResult[];
+  copyText: string;
+};
