@@ -5,7 +5,7 @@ import {
   getAuthSystemApiUrlInfo,
   maskToken,
 } from "@/lib/authDebug";
-import { TOKEN_AUTH_EXPIRED_MESSAGE } from "@/lib/constants";
+import { USER_INFO_MISSING_MESSAGE } from "@/lib/constants";
 import {
   DashboardCreditsError,
   getAccessTokenFromRequest,
@@ -28,10 +28,10 @@ export async function GET(request: NextRequest) {
   if (!token) {
     authDebugError("api-tools-verify", {
       failure: "missing_bearer_token",
-      message: TOKEN_AUTH_EXPIRED_MESSAGE,
+      message: USER_INFO_MISSING_MESSAGE,
     });
     return NextResponse.json(
-      { error: TOKEN_AUTH_EXPIRED_MESSAGE },
+      { error: USER_INFO_MISSING_MESSAGE },
       { status: 401 }
     );
   }
@@ -62,11 +62,11 @@ export async function GET(request: NextRequest) {
 
     authDebugError("api-tools-verify", {
       result: "failed",
-      error_message: TOKEN_AUTH_EXPIRED_MESSAGE,
+      error_message: USER_INFO_MISSING_MESSAGE,
     }, err);
 
     return NextResponse.json(
-      { error: TOKEN_AUTH_EXPIRED_MESSAGE },
+      { error: USER_INFO_MISSING_MESSAGE },
       { status: 500 }
     );
   }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { TOKEN_AUTH_EXPIRED_MESSAGE } from "@/lib/constants";
+import { USER_INFO_MISSING_MESSAGE } from "@/lib/constants";
 import {
   DashboardCreditsError,
   getAccessTokenFromRequest,
@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
 
   if (!token) {
     return NextResponse.json(
-      { error: TOKEN_AUTH_EXPIRED_MESSAGE, credit: null },
+      { error: USER_INFO_MISSING_MESSAGE, credit: null },
       { status: 401 }
     );
   }
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
       );
     }
     return NextResponse.json(
-      { error: TOKEN_AUTH_EXPIRED_MESSAGE, credit: null },
+      { error: USER_INFO_MISSING_MESSAGE, credit: null },
       { status: 500 }
     );
   }

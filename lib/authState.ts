@@ -1,6 +1,7 @@
 "use client";
 
 import { parseRemainingCredit } from "@/lib/toolUserMapping";
+import { USER_INFO_MISSING_MESSAGE } from "@/lib/constants";
 
 /** ダッシュボード連携の共通認証状態（表示・検索・クレジット消費で共用） */
 export type AuthState = {
@@ -271,7 +272,10 @@ export function resolveAuthState(): AuthState | null {
     cleanAuthParamsFromUrl();
   }
 
-  const merged = mergeAuthState(stored, fromUrl ?? {});
+  const legacy =
+    !stored.userId && !fromUrl?.userId ? readLegacySessionStorage() : {};
+
+  const merged = mergeAuthState({}, { ...stored, ...(fromUrl ?? {}), ...legacy });
   if (!merged) return null;
 
   saveAuthState(merged);
@@ -287,6 +291,52 @@ export function updateAuthStateCredit(credit: number): AuthState | null {
   const next = { ...current, credit };
   saveAuthState(next);
   return next;
+}
+
+/** URL を再読み込みせず localStorage / sessionStorage から user_id を取得 */
+export function getActiveUserId(): string | null {
+  if (!isBrowser()) return null;
+
+  const fromStorage = resolveAuthStateWithoutUrl();
+  if (fromStorage?.userId?.trim()) return fromStorage.userId.trim();
+
+  const legacy = readLegacySessionStorage();
+  if (legacy.userId?.trim()) return legacy.userId.trim();
+
+  const fromLocal = localStorage.getItem(AUTH_STORAGE_KEYS.userId);
+  if (fromLocal?.trim()) return fromLocal.trim();
+
+  return null;
+}
+
+export function getActiveCredit(): number | undefined {
+  if (!isBrowser()) return undefined;
+
+  const fromStorage = resolveAuthStateWithoutUrl();
+  if (fromStorage?.credit !== undefined) return fromStorage.credit;
+
+  const legacy = readLegacySessionStorage();
+  if (legacy.credit !== undefined) return legacy.credit;
+
+  const creditRaw = localStorage.getItem(AUTH_STORAGE_KEYS.credit);
+  if (creditRaw !== null) {
+    return parseRemainingCredit(creditRaw) ?? undefined;
+  }
+
+  return undefined;
+}
+
+/** 旧 API / ダッシュボードから返る token 系エラーを user_id 判定用メッセージに統一 */
+export function normalizeUserFacingError(message: string): string {
+  if (
+    message.includes("認証情報が切れ") ||
+    message.includes("access_token") ||
+    message.includes("トークン") ||
+    message.includes("Bearer")
+  ) {
+    return USER_INFO_MISSING_MESSAGE;
+  }
+  return message;
 }
 
 /** URL を再読み込みせず localStorage のみから復元 */

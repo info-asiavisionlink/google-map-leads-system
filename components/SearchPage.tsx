@@ -5,7 +5,12 @@ import CopyTsvButton from "@/components/CopyTsvButton";
 import ResultsTable from "@/components/ResultsTable";
 import SearchForm, { type SearchFormValues } from "@/components/SearchForm";
 import ToolAuthBar from "@/components/ToolAuthBar";
-import { logAuthStateDebug } from "@/lib/authState";
+import {
+  getActiveCredit,
+  getActiveUserId,
+  logAuthStateDebug,
+  normalizeUserFacingError,
+} from "@/lib/authState";
 import {
   bootstrapClientAuthDebug,
   isClientAuthDebugEnabled,
@@ -36,7 +41,6 @@ export default function SearchPage() {
     isLoading: isAuthLoading,
     isAuthenticated,
     patchCredit,
-    clearAuth,
   } = useAuthState();
 
   const [isLoading, setIsLoading] = useState(false);
@@ -55,14 +59,17 @@ export default function SearchPage() {
     null
   );
 
-  const displayCredit = authState?.credit ?? null;
+  const displayCredit = authState?.credit ?? getActiveCredit() ?? null;
 
   async function handleSearch(values: SearchFormValues) {
     setSearchError(null);
 
-    const userId = authState?.userId?.trim();
+    const userId = authState?.userId?.trim() || getActiveUserId();
+    const creditBalance = authState?.credit ?? getActiveCredit();
 
     logAuthStateDebug("handleSearch", authState, {
+      authState_userId: authState?.userId ?? "(empty)",
+      active_userId: userId ?? "(empty)",
       body_user_id: userId ?? "(empty)",
       x_user_id: userId ?? "(empty)",
     });
@@ -72,7 +79,6 @@ export default function SearchPage() {
       return;
     }
 
-    const creditBalance = authState?.credit;
     if (creditBalance === undefined || creditBalance < MIN_CREDIT_TO_SEARCH) {
       setSearchError(INSUFFICIENT_CREDIT_MESSAGE);
       return;
@@ -128,13 +134,14 @@ export default function SearchPage() {
       }
 
       if (res.status === 401 || data.code === "unauthorized") {
-        clearAuth();
-        setSearchError(data.message || USER_INFO_MISSING_MESSAGE);
+        setSearchError(USER_INFO_MISSING_MESSAGE);
         return;
       }
 
       if (res.status === 402 || data.code === "insufficient_credit") {
-        setSearchError(data.message || INSUFFICIENT_CREDIT_MESSAGE);
+        setSearchError(normalizeUserFacingError(
+          data.message || INSUFFICIENT_CREDIT_MESSAGE
+        ));
         if (data.credit !== undefined && data.credit !== null) {
           patchCredit(data.credit);
         }
@@ -142,7 +149,7 @@ export default function SearchPage() {
       }
 
       if (res.status === 500 && data.code === "consume_failed") {
-        setSearchError(data.message || CREDIT_CONSUME_FAILED_MESSAGE);
+        setSearchError(CREDIT_CONSUME_FAILED_MESSAGE);
         setResults([]);
         setCopyText("");
         return;
@@ -156,9 +163,9 @@ export default function SearchPage() {
       }
 
       if (data.status === "error" || !res.ok) {
-        setSearchError(
-          data.code === "api_error" ? API_ERROR_MESSAGE : data.message
-        );
+        const rawMessage =
+          data.code === "api_error" ? API_ERROR_MESSAGE : data.message;
+        setSearchError(normalizeUserFacingError(rawMessage));
         return;
       }
 

@@ -19,23 +19,19 @@ export const TOOL_NAME = "Googleマップ営業リスト作成";
 /** 都道府県ベース検索の DB 互換用（半径は未使用） */
 export const LEGACY_RADIUS_M = 0;
 
-export const TOKEN_AUTH_EXPIRED_MESSAGE =
-  "認証情報が切れています。再度ダッシュボードから開いてください。";
-
-export const NOT_LOGGED_IN_MESSAGE =
-  "未ログインです。ダッシュボードから利用してください。";
-
 export const USER_INFO_MISSING_MESSAGE =
   "ユーザー情報が取得できません。ダッシュボードから開いてください。";
+
+export const NOT_LOGGED_IN_MESSAGE = USER_INFO_MISSING_MESSAGE;
+
+/** @deprecated USER_INFO_MISSING_MESSAGE を使用 */
+export const AUTH_REQUIRED_MESSAGE = USER_INFO_MISSING_MESSAGE;
 
 export const LOGIN_ERROR_MESSAGE =
   "ログインに失敗しました。ダッシュボードから再度ツールを開いてください。";
 
 export const CREDIT_FETCH_FAILED_MESSAGE =
   "クレジット情報の取得に失敗しました。ダッシュボードから再度ツールを開くか、しばらくしてからお試しください。";
-
-/** @deprecated トークン認証では TOKEN_AUTH_EXPIRED_MESSAGE を使用 */
-export const AUTH_REQUIRED_MESSAGE = TOKEN_AUTH_EXPIRED_MESSAGE;
 
 export const INSUFFICIENT_CREDIT_MESSAGE =
   "クレジットが不足しています。";

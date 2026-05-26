@@ -15,7 +15,7 @@ import {
   CREDIT_FETCH_FAILED_MESSAGE,
   LOGIN_ERROR_MESSAGE,
   MIN_CREDIT_TO_SEARCH,
-  TOKEN_AUTH_EXPIRED_MESSAGE,
+  USER_INFO_MISSING_MESSAGE,
 } from "@/lib/constants";
 import {
   clearStoredAccessToken,
@@ -49,7 +49,7 @@ function isCreditFetchError(message: string): boolean {
 
 function mapVerifyError(err: unknown): string {
   const message =
-    err instanceof Error ? err.message : TOKEN_AUTH_EXPIRED_MESSAGE;
+    err instanceof Error ? err.message : USER_INFO_MISSING_MESSAGE;
 
   if (isCreditFetchError(message)) {
     return CREDIT_FETCH_FAILED_MESSAGE;
@@ -82,9 +82,7 @@ export function useToolAuth() {
     initialToken ? "loading" : "unauthenticated"
   );
   const [verify, setVerify] = useState<ToolVerifyResult | null>(null);
-  const [authError, setAuthError] = useState<string | null>(
-    initialToken ? null : TOKEN_AUTH_EXPIRED_MESSAGE
-  );
+  const [authError, setAuthError] = useState<string | null>(null);
   const verifiedTokenRef = useRef<string | null>(null);
 
   const applyVerifyResult = useCallback((result: ToolVerifyResult) => {
@@ -141,7 +139,7 @@ export function useToolAuth() {
       const errMessage =
         "error" in data && typeof data.error === "string"
           ? data.error
-          : TOKEN_AUTH_EXPIRED_MESSAGE;
+          : USER_INFO_MISSING_MESSAGE;
       logVerifyFailure({
         error_message: errMessage,
         response_status: res.status,
@@ -201,7 +199,7 @@ export function useToolAuth() {
 
         const isAuthFailure =
           message === LOGIN_ERROR_MESSAGE ||
-          message === TOKEN_AUTH_EXPIRED_MESSAGE ||
+          message === USER_INFO_MISSING_MESSAGE ||
           (err instanceof Error &&
             (err.message.includes("認証") ||
               err.message.includes("トークン") ||

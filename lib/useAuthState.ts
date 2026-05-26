@@ -2,6 +2,8 @@
 
 import {
   clearAuthState,
+  getActiveCredit,
+  getActiveUserId,
   isAuthStateComplete,
   logAuthStateDebug,
   resolveAuthState,
@@ -11,9 +13,19 @@ import {
 } from "@/lib/authState";
 import { useCallback, useEffect, useState } from "react";
 
+function readInitialAuthState(): AuthState | null {
+  if (typeof window === "undefined") return null;
+  return resolveAuthState();
+}
+
 export function useAuthState() {
-  const [authState, setAuthState] = useState<AuthState | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [authState, setAuthState] = useState<AuthState | null>(
+    readInitialAuthState
+  );
+  const [isLoading, setIsLoading] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return readInitialAuthState() === null;
+  });
 
   useEffect(() => {
     const state = resolveAuthState();
@@ -65,5 +77,7 @@ export function useAuthState() {
     clearAuth,
     refreshAuthState,
     updateAuth,
+    getActiveUserId,
+    getActiveCredit,
   };
 }

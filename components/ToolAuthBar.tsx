@@ -3,7 +3,11 @@ import {
   MAX_CREDIT_COST,
   MAX_RESULTS,
 } from "@/lib/constants";
-import type { AuthState } from "@/lib/authState";
+import {
+  getActiveCredit,
+  getActiveUserId,
+  type AuthState,
+} from "@/lib/authState";
 import { getSafeDashboardUrl } from "@/lib/toolToken";
 
 type ToolAuthBarProps = {
@@ -27,7 +31,7 @@ export default function ToolAuthBar({
     );
   }
 
-  if (!authState?.userId) {
+  if (!authState?.userId && !getActiveUserId()) {
     return (
       <div className="rounded-2xl border border-gray-200 bg-gray-50 p-5 text-sm text-gray-600">
         ログイン前でも検索条件の入力は可能です。検索実行時はダッシュボードからのログインが必要です。
@@ -36,7 +40,11 @@ export default function ToolAuthBar({
   }
 
   const displayName =
-    authState.nickname?.trim() || authState.email?.trim() || "ユーザー";
+    authState?.nickname?.trim() ||
+    authState?.email?.trim() ||
+    "ユーザー";
+  const userId = authState?.userId ?? getActiveUserId() ?? "";
+  const credit = authState?.credit ?? getActiveCredit() ?? 0;
 
   return (
     <div className="rounded-2xl border border-blue-100 bg-white p-5 shadow-sm sm:p-6">
@@ -48,16 +56,16 @@ export default function ToolAuthBar({
           <p className="mt-2 text-lg font-bold text-gray-900 sm:text-xl">
             {displayName}
           </p>
-          {authState.email && (
+          {authState?.email && (
             <p className="mt-1 text-sm text-gray-600">{authState.email}</p>
           )}
           <p className="mt-1 font-mono text-xs text-gray-400">
-            ID: {authState.userId}
+            ID: {userId}
           </p>
           <p className="mt-4 text-sm text-gray-700">
             残クレジット:{" "}
             <span className="text-base font-bold text-blue-700">
-              {(authState.credit ?? 0).toLocaleString("ja-JP")}
+              {credit.toLocaleString("ja-JP")}
             </span>
           </p>
         </div>
