@@ -1,43 +1,34 @@
 import { GOOGLE_MAP_SEARCH_CREDIT_COST } from "@/lib/constants";
 import { getSafeDashboardUrl } from "@/lib/toolToken";
-import type { ToolUserSession } from "@/lib/toolUserSession";
-import type { ToolVerifyResult } from "@/lib/toolVerify";
+import type { ToolUser } from "@/lib/toolUser";
 
 type ToolAuthBarProps = {
-  verify: ToolVerifyResult | null;
-  userSession: ToolUserSession | null;
+  user: ToolUser | null;
   isLoading?: boolean;
+  /** 照合中メッセージ（デフォルト: ユーザー情報を確認中…） */
+  loadingMessage?: string;
 };
 
 export default function ToolAuthBar({
-  verify,
-  userSession,
+  user,
   isLoading = false,
+  loadingMessage = "ユーザー情報を確認中…",
 }: ToolAuthBarProps) {
   const dashboardHref = getSafeDashboardUrl("/dashboard");
 
   if (isLoading) {
     return (
       <div className="rounded-2xl border border-blue-100 bg-white p-5 shadow-sm">
-        <p className="text-sm text-gray-500">認証情報を確認しています…</p>
+        <p className="text-sm text-gray-500">{loadingMessage}</p>
       </div>
     );
   }
 
-  if (!verify && !userSession) {
+  if (!user) {
     return null;
   }
 
-  const displayName =
-    userSession?.username?.trim() ||
-    verify?.user.username?.trim() ||
-    userSession?.email ||
-    verify?.user.email ||
-    "ユーザー";
-  const email = userSession?.email ?? verify?.user.email ?? "";
-  const remainingCredit =
-    userSession?.remaining_credit ?? verify?.credit ?? 0;
-  const creditCost = verify?.tool.credit_cost ?? GOOGLE_MAP_SEARCH_CREDIT_COST;
+  const displayName = user.username?.trim() || user.email || "ユーザー";
 
   return (
     <div className="rounded-2xl border border-blue-100 bg-white p-5 shadow-sm sm:p-6">
@@ -49,13 +40,11 @@ export default function ToolAuthBar({
           <p className="mt-2 text-lg font-bold text-gray-900 sm:text-xl">
             {displayName}
           </p>
-          {email ? (
-            <p className="mt-1 text-sm text-gray-600">{email}</p>
-          ) : null}
+          <p className="mt-1 text-sm text-gray-600">{user.email}</p>
           <p className="mt-4 text-sm text-gray-700">
             残クレジット:{" "}
             <span className="text-base font-bold text-blue-700">
-              {remainingCredit}
+              {user.credit}
             </span>
           </p>
         </div>
@@ -68,7 +57,9 @@ export default function ToolAuthBar({
       </div>
       <p className="mt-4 border-t border-gray-100 pt-4 text-xs text-gray-500">
         この検索は{" "}
-        <span className="font-semibold text-blue-700">{creditCost}</span>{" "}
+        <span className="font-semibold text-blue-700">
+          {GOOGLE_MAP_SEARCH_CREDIT_COST}
+        </span>{" "}
         Credit を消費します（管理システム経由で減算）
       </p>
     </div>

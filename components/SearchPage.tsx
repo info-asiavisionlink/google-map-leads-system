@@ -8,9 +8,11 @@ import ToolAuthBar from "@/components/ToolAuthBar";
 import {
   API_ERROR_MESSAGE,
   CREDIT_CONSUME_FAILED_MESSAGE,
+  GOOGLE_MAP_SEARCH_CREDIT_COST,
   INSUFFICIENT_CREDIT_MESSAGE,
   NO_NEW_RESULTS_MESSAGE,
   TOKEN_AUTH_EXPIRED_MESSAGE,
+  TOOL_USER_QUERY_MISSING_MESSAGE,
 } from "@/lib/constants";
 import {
   clearStoredAccessToken,
@@ -18,8 +20,6 @@ import {
 } from "@/lib/toolToken";
 import { clearToolUserSession } from "@/lib/toolUserSession";
 import {
-  authDebugClientError,
-  authDebugClientInfo,
   bootstrapClientAuthDebug,
   isClientAuthDebugEnabled,
   logPageLoadContext,
@@ -27,6 +27,8 @@ import {
 } from "@/lib/authDebugClient";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
 import { useToolAuth } from "@/lib/useToolAuth";
+import { useToolUser } from "@/lib/useToolUser";
+import { resolveToolUserQuery } from "@/lib/toolUserQuery";
 import { useEffect, useState } from "react";
 
 function authHeaders(token: string): HeadersInit {
@@ -36,7 +38,7 @@ function authHeaders(token: string): HeadersInit {
   };
 }
 
-/** クライアント初回表示時に必ず token を URL から sessionStorage へ移す */
+/** access_token フロー（検索 API 用・現段階は consume 変更なし） */
 function bootstrapAccessToken(): void {
   resolveAccessToken();
 }
@@ -48,16 +50,28 @@ export default function SearchPage() {
   useEffect(() => {
     if (!isClientAuthDebugEnabled()) return;
     logPageLoadContext();
+    const q = resolveToolUserQuery();
+    console.info("[tool-user-mapping] page_load_query", {
+      ok: q.ok,
+      href: typeof window !== "undefined" ? window.location.href : "",
+      search: typeof window !== "undefined" ? window.location.search : "",
+    });
   }, []);
 
   const {
-    status: authStatus,
+    status: userStatus,
+    user,
+    authError: userAuthError,
+    isLoading: isUserLoading,
+    isAuthenticated: isUserAuthenticated,
+    remainingCredit,
+  } = useToolUser();
+
+  const {
     accessToken,
     verify,
-    userSession,
-    authError,
     creditCost,
-    canSearch,
+    canSearch: canSearchByToken,
     refreshVerify,
     patchRemainingCredit,
   } = useToolAuth();
@@ -71,21 +85,24 @@ export default function SearchPage() {
     null
   );
 
-  const isAuthLoading = authStatus === "loading";
-  const isAuthenticated = authStatus === "authenticated" && verify !== null;
+  const searchCreditCost = verify?.tool.credit_cost ?? GOOGLE_MAP_SEARCH_CREDIT_COST;
+  const canSearch =
+    isUserAuthenticated &&
+    canSearchByToken &&
+    (remainingCredit ?? user?.credit ?? 0) >= searchCreditCost;
 
   async function handleSearch(values: SearchFormValues) {
+    if (!isUserAuthenticated || !user) {
+      setSearchError(userAuthError ?? TOOL_USER_QUERY_MISSING_MESSAGE);
+      return;
+    }
+
     if (!accessToken || !verify) {
-      authDebugClientError("search-blocked", {
-        reason: "not_authenticated",
-        has_access_token: Boolean(accessToken),
-        has_verify: Boolean(verify),
-      });
       setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
       return;
     }
 
-    if (verify.credit < creditCost) {
+    if ((remainingCredit ?? user.credit) < searchCreditCost) {
       setSearchError(INSUFFICIENT_CREDIT_MESSAGE);
       return;
     }
@@ -173,15 +190,11 @@ export default function SearchPage() {
   }
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:py-10">
+    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
       <AuthDebugPanel />
 
       <div className="mb-4">
-        <ToolAuthBar
-          verify={verify}
-          userSession={userSession}
-          isLoading={isAuthLoading}
-        />
+        <ToolAuthBar user={user} isLoading={isUserLoading} />
       </div>
 
       <header className="mb-8 rounded-2xl border border-blue-100 bg-white p-6 shadow-sm sm:p-8">
@@ -204,16 +217,16 @@ export default function SearchPage() {
         </div>
       </header>
 
-      {authStatus === "unauthenticated" && (
+      {userStatus === "unauthenticated" && userAuthError && (
         <div
           role="alert"
           className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
         >
-          {authError ?? TOKEN_AUTH_EXPIRED_MESSAGE}
+          {userAuthError}
         </div>
       )}
 
-      {isAuthenticated && verify.credit < creditCost && (
+      {isUserAuthenticated && user && user.credit < searchCreditCost && (
         <div
           role="alert"
           className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
@@ -225,8 +238,8 @@ export default function SearchPage() {
       <SearchForm
         onSearch={handleSearch}
         isLoading={isLoading}
-        disabled={!canSearch || isLoading}
-        creditCost={creditCost}
+        disabled={!canSearch || isLoading || isUserLoading}
+        creditCost={searchCreditCost}
       />
 
       {isLoading && (
@@ -236,7 +249,7 @@ export default function SearchPage() {
         </div>
       )}
 
-      {searchError && isAuthenticated && (
+      {searchError && isUserAuthenticated && (
         <div
           role="alert"
           className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"

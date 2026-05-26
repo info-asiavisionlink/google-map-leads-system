@@ -33,3 +33,23 @@ export const CREDIT_CONSUME_FAILED_MESSAGE =
 
 export const NO_NEW_RESULTS_MESSAGE =
   "この検索範囲では新しい検索結果がありません。エリア、半径、キーワードを変更して再検索してください。";
+
+export const TOOL_USER_QUERY_MISSING_MESSAGE =
+  "ユーザー情報が不足しています。ダッシュボードから再度ツールを開いてください。";
+
+export const TOOL_USER_ID_MISSING_MESSAGE =
+  "user_id が指定されていません。ダッシュボードから再度ツールを開いてください。";
+
+export const TOOL_USER_SUPABASE_CONNECTION_FAILED_MESSAGE =
+  "管理システムへの接続に失敗しました。時間をおいて再度お試しください。";
+
+export const TOOL_USER_NOT_FOUND_MESSAGE =
+  "ユーザーが見つかりませんでした。ダッシュボードから再度ツールを開いてください。";
+
+export const TOOL_USER_CREDIT_FETCH_FAILED_MESSAGE =
+  "クレジット情報の取得に失敗しました。ダッシュボードをご確認ください。";
+
+export const TOOL_USER_MISMATCH_MESSAGE = "ユーザー照合失敗";
+
+export const TOOL_USER_VERIFY_FAILED_MESSAGE =
+  "ユーザー情報の確認に失敗しました。ダッシュボードから再度ツールを開いてください。";
