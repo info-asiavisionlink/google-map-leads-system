@@ -6,11 +6,11 @@ import {
   CREDIT_CONSUME_FAILED_MESSAGE,
   EXHAUSTED_NO_NEW_RESULTS_MESSAGE,
   INSUFFICIENT_CREDIT_MESSAGE,
-  MAX_RESULTS,
   MIN_CREDIT_TO_SEARCH,
   NO_RESULTS_FOUND_MESSAGE,
   SAVE_RESULTS_FAILED_MESSAGE,
   SEARCH_BATCH_SIZE,
+  SEARCH_TARGET_RESULTS,
   USER_INFO_MISSING_MESSAGE,
 } from "@/lib/constants";
 import {
@@ -57,16 +57,17 @@ import type {
   SearchStopReason,
 } from "@/lib/types";
 
-/** 1回の検索ボタンで目指す新規保存件数 */
-const TARGET_RESULTS = MAX_RESULTS;
+/** 1回の検索ボタンで目指す新規保存件数（100件で止めない・必ず200を目標） */
+const TARGET_RESULTS = SEARCH_TARGET_RESULTS;
+
 /** 内部バッチサイズ（レスポンスはループ完了後にまとめて返す） */
 const BATCH_SIZE = SEARCH_BATCH_SIZE;
 
 /** 長時間の検索ループ用（デプロイ環境の上限に合わせて調整） */
 export const maxDuration = 300;
 
-/** ループ停止の安全マージン（Vercel 300秒上限の手前） */
-const TIMEOUT_NEAR_LIMIT_MS = 270_000;
+/** ループ停止の安全マージン（maxDuration 300秒の手前） */
+const TIMEOUT_NEAR_LIMIT_MS = 285_000;
 
 type SearchBody = SearchAuthBody & {
   area?: string;
@@ -147,14 +148,23 @@ function logSearchComplete(meta: {
   spiralDistanceKm: number;
   stopReason: SearchStopReason;
 }): void {
-  if (process.env.NODE_ENV === "production") return;
-  console.log({
+  const payload = {
     totalSaved: meta.totalSaved,
+    targetResults: TARGET_RESULTS,
     currentStep: meta.currentStep,
     currentDirection: meta.currentDirection,
     spiralDistanceKm: meta.spiralDistanceKm,
     stopReason: meta.stopReason,
-  });
+    stoppedBeforeTarget: meta.totalSaved < TARGET_RESULTS,
+  };
+
+  console.log("[search-complete]", payload);
+
+  if (meta.totalSaved < TARGET_RESULTS) {
+    console.warn(
+      `[search-complete] 目標${TARGET_RESULTS}件未達で終了 stopReason=${meta.stopReason} totalSaved=${meta.totalSaved}`
+    );
+  }
 }
 
 function buildSuccessMessage(params: {
@@ -316,7 +326,7 @@ export async function POST(request: NextRequest) {
 
     const savedResults: PlaceSearchResult[] = [];
     const seenPlaceIds = new Set<string>();
-    let activeProgressId = progressRecord?.id;
+    const activeProgressId = progressRecord?.id;
     const lifetimeSavedBaseline = progressRecord?.total_saved_count ?? 0;
     let duplicateExclusionCount = 0;
     let saveFailed = false;
@@ -364,8 +374,12 @@ export async function POST(request: NextRequest) {
         break;
       }
 
-      const batchCandidates = await searcher.fetchNextBatch(
+      const batchFetchLimit = Math.min(
         BATCH_SIZE,
+        TARGET_RESULTS - savedResults.length
+      );
+      const batchCandidates = await searcher.fetchNextBatch(
+        batchFetchLimit,
         buildRuntimeExcluded()
       );
 
@@ -426,31 +440,10 @@ export async function POST(request: NextRequest) {
 
       savedResults.push(...batchResults);
 
-      const positionAfterSave = searcher.getPosition();
-      await upsertSearchProgress(supabase, {
-        userId,
-        area: prefecture,
-        keyword1,
-        keyword2,
-        position: positionAfterSave,
-        totalSavedCount: lifetimeSavedBaseline + savedResults.length,
-        isExhausted: false,
-        progressId: activeProgressId,
-      });
-      if (!activeProgressId) {
-        const reloaded = await loadSearchProgressRecord(supabase, {
-          userId,
-          area: prefecture,
-          keyword1,
-          keyword2,
-        });
-        activeProgressId = reloaded?.id;
-      }
-
       logSearchLoop({
         saved: resultRows.length,
         total_saved: savedResults.length,
-        step: positionAfterSave.currentStep,
+        step: searcher.getPosition().currentStep,
       });
 
       if (savedResults.length >= TARGET_RESULTS) {
@@ -628,7 +621,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const copyText = buildTsv(savedResults);
     const saveWarnings: string[] = [];
 
     if (saveFailed) {
@@ -672,11 +664,13 @@ export async function POST(request: NextRequest) {
       creditAfter,
     });
 
+    const responseResults = savedResults.slice(0, TARGET_RESULTS);
+
     return jsonResponse({
       status: "success",
       message,
-      results: savedResults,
-      copyText,
+      results: responseResults,
+      copyText: buildTsv(responseResults),
       credit: creditAfter,
       creditBefore: creditBeforeConsume,
       creditAfter,

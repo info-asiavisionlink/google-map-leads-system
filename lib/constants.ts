@@ -1,7 +1,10 @@
-/** 1回の検索で取得できる最大件数 */
-export const MAX_RESULTS = 200;
+/** 1回の検索で取得・保存する目標件数（変更時は全モジュールでこの定数を参照） */
+export const SEARCH_TARGET_RESULTS = 200;
 
-/** 検索・保存ループの1バッチ件数 */
+/** @deprecated SEARCH_TARGET_RESULTS を使用 */
+export const MAX_RESULTS = SEARCH_TARGET_RESULTS;
+
+/** 検索・保存ループの1バッチ件数（50×4回で200件） */
 export const SEARCH_BATCH_SIZE = 50;
 
 /** 1件あたりのクレジット消費 */

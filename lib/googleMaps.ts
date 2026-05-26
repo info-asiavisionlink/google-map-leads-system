@@ -1,4 +1,4 @@
-import { MAX_RESULTS } from "@/lib/constants";
+import { SEARCH_TARGET_RESULTS } from "@/lib/constants";
 import {
   detectClosedDays,
   formatBusinessStatus,
@@ -315,7 +315,7 @@ export type SearchPlacesMultiPointParams = {
 export async function searchPlacesMultiPoint(
   params: SearchPlacesMultiPointParams
 ): Promise<TextSearchPlace[]> {
-  const maxResults = params.maxResults ?? MAX_RESULTS;
+  const maxResults = params.maxResults ?? SEARCH_TARGET_RESULTS;
   const searchPoints = generateCircularSearchPoints(params.center);
   const results: TextSearchPlace[] = [];
   const seenPlaceIds = new Set<string>();

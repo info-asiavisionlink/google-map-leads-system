@@ -1,3 +1,4 @@
+import { SEARCH_TARGET_RESULTS } from "./constants";
 import type { PlaceSearchResult } from "./types";
 
 const TSV_HEADER =
@@ -20,7 +21,11 @@ export function escapeTsvCell(value: string | number | null | undefined): string
 }
 
 export function buildTsv(results: PlaceSearchResult[]): string {
-  const rows = results.map((r) => {
+  const capped =
+    results.length > SEARCH_TARGET_RESULTS
+      ? results.slice(0, SEARCH_TARGET_RESULTS)
+      : results;
+  const rows = capped.map((r) => {
     return [
       escapeTsvCell(r.name),
       escapeTsvCell(r.category),
