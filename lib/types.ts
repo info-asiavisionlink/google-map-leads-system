@@ -28,7 +28,11 @@ export type SearchApiResponse = {
   results: PlaceSearchResult[];
   copyText: string;
   credit?: number | null;
+  /** @deprecated savedCount を使用 */
   resultCount?: number;
+  fetchedCount?: number;
+  savedCount?: number;
+  saveFailedCount?: number;
   creditConsumed?: number;
   creditBefore?: number;
   creditAfter?: number;

@@ -10,6 +10,7 @@ import {
   MIN_CREDIT_TO_SEARCH,
   NO_RESULTS_FOUND_MESSAGE,
   SAVE_RESULTS_FAILED_MESSAGE,
+  SEARCH_BATCH_SIZE,
   USER_INFO_MISSING_MESSAGE,
 } from "@/lib/constants";
 import {
@@ -19,9 +20,9 @@ import {
 } from "@/lib/dashboardCredits";
 import {
   buildSearchQuery,
+  createIncrementalPlacesSearcher,
   geocodePrefecture,
   getPlaceDetails,
-  searchPlacesMultiPoint,
   toPlaceSearchResult,
 } from "@/lib/googleMaps";
 import { PREFECTURES } from "@/lib/prefectures";
@@ -33,7 +34,8 @@ import {
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import {
   completeSearchRequest,
-  insertSearchResultsInChunks,
+  getSavedPlaceIdsForRequest,
+  insertSearchResultsBatch,
   logSupabasePersistenceError,
   placeSearchResultToRow,
 } from "@/lib/searchPersistence";
@@ -97,6 +99,32 @@ async function markSearchRequestFailed(
       result_count: resultCount,
     })
     .eq("id", searchRequestId);
+}
+
+function logSearchLoop(meta: {
+  fetched: number;
+  saved: number;
+  duplicates: number;
+  total_saved: number;
+}): void {
+  if (process.env.NODE_ENV === "production") return;
+  console.log("[search-loop]", meta);
+}
+
+function buildSuccessMessage(params: {
+  fetchedCount: number;
+  savedCount: number;
+  saveFailedCount: number;
+  creditConsumed: number;
+  creditAfter: number;
+}): string {
+  return [
+    `取得件数: ${params.fetchedCount}件`,
+    `保存成功: ${params.savedCount}件`,
+    `保存失敗: ${params.saveFailedCount}件`,
+    `消費クレジット: ${params.creditConsumed}`,
+    `残クレジット: ${params.creditAfter.toLocaleString("ja-JP")}`,
+  ].join(" / ");
 }
 
 export async function POST(request: NextRequest) {
@@ -201,28 +229,135 @@ export async function POST(request: NextRequest) {
     }
 
     searchRequestId = pendingRequest.id as string;
+    const requestId = searchRequestId;
 
     const center = await geocodePrefecture(prefecture);
     const query = buildSearchQuery(keyword1, keyword2 ?? undefined, prefecture);
     const excluded = await getExcludedPlaceIds(userId);
-
-    const candidates = await searchPlacesMultiPoint({
+    const searcher = createIncrementalPlacesSearcher({
       query,
       center,
       excludedPlaceIds: excluded,
-      maxResults: MAX_RESULTS,
     });
 
-    if (candidates.length === 0) {
+    const savedResults: PlaceSearchResult[] = [];
+    const seenPlaceIds = new Set<string>();
+    let fetchedCount = 0;
+    let saveFailedCount = 0;
+    let saveFailed = false;
+
+    while (savedResults.length < MAX_RESULTS) {
+      const dbSavedIds = await getSavedPlaceIdsForRequest(supabase, requestId);
+      const runtimeExcluded = new Set([
+        ...seenPlaceIds,
+        ...dbSavedIds,
+      ]);
+
+      const batchCandidates = await searcher.fetchNextBatch(
+        SEARCH_BATCH_SIZE,
+        runtimeExcluded
+      );
+
+      if (batchCandidates.length === 0) {
+        break;
+      }
+
+      fetchedCount += batchCandidates.length;
+
+      const toSaveCandidates = batchCandidates.filter(
+        (place) =>
+          !dbSavedIds.has(place.placeId) && !seenPlaceIds.has(place.placeId)
+      );
+      const duplicates = batchCandidates.length - toSaveCandidates.length;
+
+      for (const place of batchCandidates) {
+        seenPlaceIds.add(place.placeId);
+      }
+
+      if (toSaveCandidates.length === 0) {
+        logSearchLoop({
+          fetched: batchCandidates.length,
+          saved: 0,
+          duplicates,
+          total_saved: savedResults.length,
+        });
+        continue;
+      }
+
+      const remainingSlots = MAX_RESULTS - savedResults.length;
+      const candidatesToProcess = toSaveCandidates.slice(0, remainingSlots);
+
+      const detailsList = await Promise.all(
+        candidatesToProcess.map((place) => getPlaceDetails(place.placeId))
+      );
+      const batchResults = detailsList.map(toPlaceSearchResult);
+
+      const resultRows = batchResults
+        .map((r) => placeSearchResultToRow(r, requestId, userId))
+        .filter((row): row is NonNullable<typeof row> => row !== null);
+
+      if (resultRows.length < batchResults.length) {
+        console.warn(
+          "[search-persistence] place_id が無い店舗をスキップ:",
+          batchResults.length - resultRows.length
+        );
+      }
+
+      const insertOutcome = await insertSearchResultsBatch(supabase, resultRows);
+
+      if (!insertOutcome.ok) {
+        saveFailedCount += resultRows.length;
+        saveFailed = true;
+        logSearchLoop({
+          fetched: batchCandidates.length,
+          saved: 0,
+          duplicates,
+          total_saved: savedResults.length,
+        });
+        break;
+      }
+
+      savedResults.push(...batchResults);
+
+      logSearchLoop({
+        fetched: batchCandidates.length,
+        saved: resultRows.length,
+        duplicates,
+        total_saved: savedResults.length,
+      });
+
+      if (savedResults.length >= MAX_RESULTS) {
+        break;
+      }
+    }
+
+    if (savedResults.length === 0) {
       await supabase
         .from("search_requests")
         .update({
-          status: "completed",
+          status: saveFailed ? "failed" : "completed",
           result_count: 0,
           latitude: center.lat,
           longitude: center.lng,
         })
-        .eq("id", searchRequestId);
+        .eq("id", requestId);
+
+      if (saveFailed) {
+        return jsonResponse(
+          {
+            status: "error",
+            message: SAVE_RESULTS_FAILED_MESSAGE,
+            results: [],
+            copyText: "",
+            credit: currentCredit,
+            fetchedCount,
+            savedCount: 0,
+            saveFailedCount,
+            code: "save_failed",
+          },
+          500
+        );
+      }
 
       return jsonResponse({
         status: "no_results",
@@ -230,34 +365,35 @@ export async function POST(request: NextRequest) {
         results: [],
         copyText: "",
         credit: currentCredit,
+        fetchedCount: 0,
+        savedCount: 0,
+        saveFailedCount: 0,
         resultCount: 0,
         creditConsumed: 0,
       });
     }
 
-    const actualCreditCost = calculateCreditCost(candidates.length);
+    const savedCount = savedResults.length;
+    const actualCreditCost = calculateCreditCost(savedCount);
 
     if (!hasEnoughCredit(currentCredit, actualCreditCost)) {
-      await markSearchRequestFailed(searchRequestId, 0);
+      await markSearchRequestFailed(requestId, savedCount);
       return jsonResponse(
         {
           status: "error",
           message: INSUFFICIENT_CREDIT_MESSAGE,
-          results: [],
-          copyText: "",
+          results: savedResults,
+          copyText: buildTsv(savedResults),
           credit: currentCredit,
+          fetchedCount,
+          savedCount,
+          saveFailedCount,
+          resultCount: savedCount,
           code: "insufficient_credit",
         },
         402
       );
     }
-
-    const detailsList = await Promise.all(
-      candidates.map((place) => getPlaceDetails(place.placeId))
-    );
-
-    const results: PlaceSearchResult[] = detailsList.map(toPlaceSearchResult);
-    const newPlaceIds = results.map((r) => r.placeId);
 
     let creditAfter: number;
     let creditBeforeConsume: number | undefined;
@@ -265,8 +401,8 @@ export async function POST(request: NextRequest) {
       const consumeResult = await consumeDashboardCredits({
         userId,
         amount: actualCreditCost,
-        resultCount: results.length,
-        externalRequestId: searchRequestId,
+        resultCount: savedCount,
+        externalRequestId: requestId,
       });
       creditAfter = consumeResult.credit;
       creditBeforeConsume = consumeResult.creditBefore;
@@ -276,7 +412,7 @@ export async function POST(request: NextRequest) {
         { failure: "dashboard_supabase_consume", user_id: userId },
         consumeErr
       );
-      await markSearchRequestFailed(searchRequestId, results.length);
+      await markSearchRequestFailed(requestId, savedCount);
 
       if (
         consumeErr instanceof DashboardCreditsError &&
@@ -286,9 +422,13 @@ export async function POST(request: NextRequest) {
           {
             status: "error",
             message: consumeErr.message,
-            results: [],
-            copyText: "",
+            results: savedResults,
+            copyText: buildTsv(savedResults),
             credit: currentCredit,
+            fetchedCount,
+            savedCount,
+            saveFailedCount,
+            resultCount: savedCount,
             code: "insufficient_credit",
           },
           402
@@ -303,36 +443,27 @@ export async function POST(request: NextRequest) {
         {
           status: "error",
           message: detail,
-          results: [],
-          copyText: "",
+          results: savedResults,
+          copyText: buildTsv(savedResults),
           credit: currentCredit,
+          fetchedCount,
+          savedCount,
+          saveFailedCount,
+          resultCount: savedCount,
           code: "consume_failed",
         },
         500
       );
     }
 
-    const requestId = searchRequestId as string;
-    const copyText = buildTsv(results);
+    const copyText = buildTsv(savedResults);
     const saveWarnings: string[] = [];
 
-    const resultRows = results
-      .map((r) => placeSearchResultToRow(r, requestId, userId))
-      .filter((row): row is NonNullable<typeof row> => row !== null);
-
-    if (resultRows.length < results.length) {
-      console.warn(
-        "[search-persistence] place_id が無い店舗をスキップ:",
-        results.length - resultRows.length
-      );
-    }
-
-    const insertOutcome = await insertSearchResultsInChunks(supabase, resultRows);
-
-    if (!insertOutcome.ok) {
-      await markSearchRequestFailed(requestId, results.length);
+    if (saveFailed) {
+      await markSearchRequestFailed(requestId, savedCount);
       saveWarnings.push(SAVE_RESULTS_FAILED_MESSAGE);
     } else {
+      const newPlaceIds = savedResults.map((r) => r.placeId);
       const excludedRows = newPlaceIds.map((placeId) => ({
         user_id: userId,
         place_id: placeId,
@@ -352,7 +483,7 @@ export async function POST(request: NextRequest) {
       }
 
       const completeError = await completeSearchRequest(supabase, requestId, {
-        resultCount: results.length,
+        resultCount: savedCount,
         latitude: center.lat,
         longitude: center.lng,
       });
@@ -362,17 +493,26 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const message = `取得件数：${results.length}件 / 消費クレジット：${actualCreditCost} / 残りクレジット：${creditAfter.toLocaleString("ja-JP")}`;
+    const message = buildSuccessMessage({
+      fetchedCount,
+      savedCount,
+      saveFailedCount,
+      creditConsumed: actualCreditCost,
+      creditAfter,
+    });
 
     return jsonResponse({
       status: "success",
       message,
-      results,
+      results: savedResults,
       copyText,
       credit: creditAfter,
       creditBefore: creditBeforeConsume,
       creditAfter,
-      resultCount: results.length,
+      fetchedCount,
+      savedCount,
+      saveFailedCount,
+      resultCount: savedCount,
       creditConsumed: actualCreditCost,
       saveWarning: saveWarnings.length > 0 ? saveWarnings.join(" ") : null,
     });

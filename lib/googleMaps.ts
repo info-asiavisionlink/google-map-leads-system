@@ -221,6 +221,58 @@ function mapSearchItem(item: NewPlaceSearchItem): TextSearchPlace | null {
   };
 }
 
+export async function searchPlacesAtPointPage(
+  query: string,
+  point: SearchPoint,
+  pageToken?: string
+): Promise<{ places: TextSearchPlace[]; nextPageToken?: string }> {
+  const body: Record<string, unknown> = {
+    textQuery: query,
+    languageCode: "ja",
+    regionCode: "JP",
+    maxResultCount: 20,
+    locationBias: {
+      circle: {
+        center: {
+          latitude: point.lat,
+          longitude: point.lng,
+        },
+        radius: point.radiusM,
+      },
+    },
+  };
+
+  if (pageToken) {
+    body.pageToken = pageToken;
+  }
+
+  const res = await fetch(PLACES_SEARCH_TEXT_URL, {
+    method: "POST",
+    headers: placesHeaders(TEXT_SEARCH_FIELD_MASK),
+    body: JSON.stringify(body),
+  });
+
+  const data = (await res.json()) as {
+    places?: NewPlaceSearchItem[];
+    nextPageToken?: string;
+    error?: { message?: string; status?: string };
+  };
+
+  if (!res.ok) {
+    const detail =
+      data.error?.message ?? res.statusText ?? "Text Search failed";
+    throw new Error(`店舗検索に失敗しました: ${detail}`);
+  }
+
+  const places: TextSearchPlace[] = [];
+  for (const item of data.places ?? []) {
+    const mapped = mapSearchItem(item);
+    if (mapped) places.push(mapped);
+  }
+
+  return { places, nextPageToken: data.nextPageToken };
+}
+
 export async function searchPlacesAtPoint(
   query: string,
   point: SearchPoint,
@@ -231,51 +283,18 @@ export async function searchPlacesAtPoint(
   const maxPerPoint = Math.min(60, Math.max(1, limit));
 
   do {
-    const body: Record<string, unknown> = {
-      textQuery: query,
-      languageCode: "ja",
-      regionCode: "JP",
-      maxResultCount: Math.min(20, maxPerPoint - places.length),
-      locationBias: {
-        circle: {
-          center: {
-            latitude: point.lat,
-            longitude: point.lng,
-          },
-          radius: point.radiusM,
-        },
-      },
-    };
+    const { places: pagePlaces, nextPageToken } = await searchPlacesAtPointPage(
+      query,
+      point,
+      pageToken
+    );
 
-    if (pageToken) {
-      body.pageToken = pageToken;
-    }
-
-    const res = await fetch(PLACES_SEARCH_TEXT_URL, {
-      method: "POST",
-      headers: placesHeaders(TEXT_SEARCH_FIELD_MASK),
-      body: JSON.stringify(body),
-    });
-
-    const data = (await res.json()) as {
-      places?: NewPlaceSearchItem[];
-      nextPageToken?: string;
-      error?: { message?: string; status?: string };
-    };
-
-    if (!res.ok) {
-      const detail =
-        data.error?.message ?? res.statusText ?? "Text Search failed";
-      throw new Error(`店舗検索に失敗しました: ${detail}`);
-    }
-
-    for (const item of data.places ?? []) {
-      const mapped = mapSearchItem(item);
-      if (mapped) places.push(mapped);
+    for (const place of pagePlaces) {
+      places.push(place);
       if (places.length >= maxPerPoint) break;
     }
 
-    pageToken = data.nextPageToken;
+    pageToken = nextPageToken;
     if (pageToken && places.length < maxPerPoint) {
       await new Promise((r) => setTimeout(r, 300));
     } else {
@@ -323,6 +342,80 @@ export async function searchPlacesMultiPoint(
   }
 
   return results;
+}
+
+export type IncrementalPlacesSearcher = {
+  fetchNextBatch: (
+    maxCount: number,
+    runtimeExcluded: Set<string>
+  ) => Promise<TextSearchPlace[]>;
+  isExhausted: () => boolean;
+};
+
+export function createIncrementalPlacesSearcher(params: {
+  query: string;
+  center: { lat: number; lng: number };
+  excludedPlaceIds: Set<string>;
+}): IncrementalPlacesSearcher {
+  const searchPoints = generateCircularSearchPoints(params.center);
+  const sessionSeen = new Set<string>();
+  let pointIndex = 0;
+  let pageToken: string | undefined;
+  let exhausted = false;
+
+  async function fetchNextBatch(
+    maxCount: number,
+    runtimeExcluded: Set<string>
+  ): Promise<TextSearchPlace[]> {
+    const batch: TextSearchPlace[] = [];
+
+    while (batch.length < maxCount && !exhausted) {
+      if (pointIndex >= searchPoints.length) {
+        exhausted = true;
+        break;
+      }
+
+      const point = searchPoints[pointIndex];
+      const { places: pagePlaces, nextPageToken } =
+        await searchPlacesAtPointPage(params.query, point, pageToken);
+
+      for (const place of pagePlaces) {
+        const pid = place.placeId;
+        if (
+          !pid ||
+          sessionSeen.has(pid) ||
+          params.excludedPlaceIds.has(pid) ||
+          runtimeExcluded.has(pid)
+        ) {
+          continue;
+        }
+        sessionSeen.add(pid);
+        batch.push(place);
+        if (batch.length >= maxCount) break;
+      }
+
+      if (batch.length >= maxCount) break;
+
+      if (nextPageToken) {
+        pageToken = nextPageToken;
+        await new Promise((r) => setTimeout(r, 300));
+      } else {
+        pointIndex++;
+        pageToken = undefined;
+      }
+
+      if (pointIndex >= searchPoints.length && !pageToken) {
+        exhausted = true;
+      }
+    }
+
+    return batch;
+  }
+
+  return {
+    fetchNextBatch,
+    isExhausted: () => exhausted,
+  };
 }
 
 /** @deprecated 単一点検索（互換用） */

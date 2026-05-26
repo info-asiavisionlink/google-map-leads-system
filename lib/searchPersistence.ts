@@ -115,6 +115,45 @@ export function logSupabasePersistenceError(
   });
 }
 
+export async function getSavedPlaceIdsForRequest(
+  supabase: SupabaseClient,
+  searchRequestId: string
+): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from("search_results")
+    .select("place_id")
+    .eq("search_request_id", searchRequestId);
+
+  if (error) {
+    logSupabasePersistenceError("search_results place_id fetch error", error, {
+      rowCount: 0,
+    });
+    throw new Error("保存済み place_id の取得に失敗しました");
+  }
+
+  return new Set((data ?? []).map((row) => row.place_id as string));
+}
+
+export async function insertSearchResultsBatch(
+  supabase: SupabaseClient,
+  rows: SearchResultRow[]
+): Promise<{ ok: true } | { ok: false; error: PostgrestError }> {
+  if (rows.length === 0) {
+    return { ok: true };
+  }
+
+  const { error } = await supabase.from("search_results").insert(rows);
+  if (error) {
+    logSupabasePersistenceError("search_results insert error", error, {
+      rowCount: rows.length,
+      sampleRow: rows[0],
+    });
+    return { ok: false, error };
+  }
+
+  return { ok: true };
+}
+
 export async function insertSearchResultsInChunks(
   supabase: SupabaseClient,
   rows: SearchResultRow[]

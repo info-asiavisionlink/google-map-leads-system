@@ -1,6 +1,9 @@
 /** 1回の検索で取得できる最大件数 */
 export const MAX_RESULTS = 200;
 
+/** 検索・保存ループの1バッチ件数 */
+export const SEARCH_BATCH_SIZE = 50;
+
 /** 1件あたりのクレジット消費 */
 export const CREDIT_PER_RESULT = 2;
 

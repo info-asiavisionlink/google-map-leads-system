@@ -51,7 +51,11 @@ export default function SearchPage() {
   const [status, setStatus] = useState<SearchApiResponse["status"] | null>(
     null
   );
-  const [lastResultCount, setLastResultCount] = useState<number | null>(null);
+  const [lastFetchedCount, setLastFetchedCount] = useState<number | null>(null);
+  const [lastSavedCount, setLastSavedCount] = useState<number | null>(null);
+  const [lastSaveFailedCount, setLastSaveFailedCount] = useState<number | null>(
+    null
+  );
   const [lastCreditConsumed, setLastCreditConsumed] = useState<number | null>(
     null
   );
@@ -90,7 +94,9 @@ export default function SearchPage() {
     setStatus(null);
     setResults([]);
     setCopyText("");
-    setLastResultCount(null);
+    setLastFetchedCount(null);
+    setLastSavedCount(null);
+    setLastSaveFailedCount(null);
     setLastCreditConsumed(null);
     setLastRemainingCredit(null);
     setSaveWarning(null);
@@ -169,7 +175,9 @@ export default function SearchPage() {
 
       if (data.status === "no_results") {
         setSearchError(null);
-        setLastResultCount(data.resultCount ?? 0);
+        setLastFetchedCount(data.fetchedCount ?? 0);
+        setLastSavedCount(data.savedCount ?? 0);
+        setLastSaveFailedCount(data.saveFailedCount ?? 0);
         setLastCreditConsumed(data.creditConsumed ?? 0);
         if (data.credit != null) setLastRemainingCredit(data.credit);
         return;
@@ -178,7 +186,9 @@ export default function SearchPage() {
       if (data.status === "success") {
         setResults(data.results);
         setCopyText(data.copyText);
-        setLastResultCount(data.resultCount ?? data.results.length);
+        setLastFetchedCount(data.fetchedCount ?? null);
+        setLastSavedCount(data.savedCount ?? data.resultCount ?? data.results.length);
+        setLastSaveFailedCount(data.saveFailedCount ?? 0);
         setLastCreditConsumed(data.creditConsumed ?? null);
         if (data.credit != null) setLastRemainingCredit(data.credit);
         setSaveWarning(data.saveWarning ?? null);
@@ -271,12 +281,26 @@ export default function SearchPage() {
       {status === "success" && message && (
         <div className="mt-6 rounded-lg border border-green-200 bg-green-50 px-4 py-4 text-sm text-green-900">
           <p className="font-medium">{message}</p>
-          {lastResultCount != null && (
-            <dl className="mt-3 grid gap-1 sm:grid-cols-3">
-              <div>
-                <dt className="text-xs text-green-700">取得件数</dt>
-                <dd className="font-semibold">{lastResultCount}件</dd>
-              </div>
+          {(lastFetchedCount != null || lastSavedCount != null) && (
+            <dl className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+              {lastFetchedCount != null && (
+                <div>
+                  <dt className="text-xs text-green-700">取得件数</dt>
+                  <dd className="font-semibold">{lastFetchedCount}件</dd>
+                </div>
+              )}
+              {lastSavedCount != null && (
+                <div>
+                  <dt className="text-xs text-green-700">保存成功</dt>
+                  <dd className="font-semibold">{lastSavedCount}件</dd>
+                </div>
+              )}
+              {lastSaveFailedCount != null && (
+                <div>
+                  <dt className="text-xs text-green-700">保存失敗</dt>
+                  <dd className="font-semibold">{lastSaveFailedCount}件</dd>
+                </div>
+              )}
               {lastCreditConsumed != null && (
                 <div>
                   <dt className="text-xs text-green-700">消費クレジット</dt>
@@ -287,7 +311,7 @@ export default function SearchPage() {
               )}
               {lastRemainingCredit != null && (
                 <div>
-                  <dt className="text-xs text-green-700">残りクレジット</dt>
+                  <dt className="text-xs text-green-700">残クレジット</dt>
                   <dd className="font-semibold">
                     {formatCredit(lastRemainingCredit)}
                   </dd>
