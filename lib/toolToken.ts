@@ -1,31 +1,39 @@
 "use client";
 
 import {
+  AUTH_STORAGE_KEYS,
+  LEGACY_ACCESS_TOKEN_KEY,
+} from "@/lib/authState";
+import {
   authDebugClientInfo,
   isClientAuthDebugEnabled,
   logSessionStorageState,
   logTokenAcquisition,
 } from "@/lib/authDebugClient";
 
-/** sessionStorage キー（localStorage は使わない） */
-export const TOOL_ACCESS_TOKEN_KEY = "tool_access_token";
+/** @deprecated authState の LEGACY_ACCESS_TOKEN_KEY と同値 */
+export const TOOL_ACCESS_TOKEN_KEY = LEGACY_ACCESS_TOKEN_KEY;
 
-const TOKEN_PARAM = "access_token";
+const TOKEN_PARAMS = ["access_token", "token"] as const;
 
 export function readTokenFromUrl(): string | null {
   if (typeof window === "undefined") return null;
 
   const searchParams = new URLSearchParams(window.location.search);
-  const fromQuery = searchParams.get(TOKEN_PARAM)?.trim();
-  if (fromQuery) return decodeURIComponent(fromQuery);
+  for (const param of TOKEN_PARAMS) {
+    const fromQuery = searchParams.get(param)?.trim();
+    if (fromQuery) return decodeURIComponent(fromQuery);
+  }
 
   const hash = window.location.hash.startsWith("#")
     ? window.location.hash.slice(1)
     : window.location.hash;
   if (hash) {
     const hashParams = new URLSearchParams(hash);
-    const fromHash = hashParams.get(TOKEN_PARAM)?.trim();
-    if (fromHash) return decodeURIComponent(fromHash);
+    for (const param of TOKEN_PARAMS) {
+      const fromHash = hashParams.get(param)?.trim();
+      if (fromHash) return decodeURIComponent(fromHash);
+    }
   }
 
   return null;
@@ -33,13 +41,17 @@ export function readTokenFromUrl(): string | null {
 
 function buildCleanUrl(): string {
   const searchParams = new URLSearchParams(window.location.search);
-  searchParams.delete(TOKEN_PARAM);
+  for (const param of TOKEN_PARAMS) {
+    searchParams.delete(param);
+  }
 
   const hash = window.location.hash.startsWith("#")
     ? window.location.hash.slice(1)
     : window.location.hash;
   const hashParams = hash ? new URLSearchParams(hash) : new URLSearchParams();
-  hashParams.delete(TOKEN_PARAM);
+  for (const param of TOKEN_PARAMS) {
+    hashParams.delete(param);
+  }
 
   const query = searchParams.toString();
   const newHash = hashParams.toString();
@@ -50,25 +62,33 @@ function buildCleanUrl(): string {
   );
 }
 
-/**
- * URL の access_token を sessionStorage に保存し、URL から削除する。
- * クライアント専用（ブラウザ上でのみ呼び出すこと）。
- */
 function detectTokenSource(): "url_query" | "url_hash" | "none" {
   if (typeof window === "undefined") return "none";
 
   const searchParams = new URLSearchParams(window.location.search);
-  if (searchParams.get(TOKEN_PARAM)?.trim()) return "url_query";
+  for (const param of TOKEN_PARAMS) {
+    if (searchParams.get(param)?.trim()) return "url_query";
+  }
 
   const hash = window.location.hash.startsWith("#")
     ? window.location.hash.slice(1)
     : window.location.hash;
   if (hash) {
     const hashParams = new URLSearchParams(hash);
-    if (hashParams.get(TOKEN_PARAM)?.trim()) return "url_hash";
+    for (const param of TOKEN_PARAMS) {
+      if (hashParams.get(param)?.trim()) return "url_hash";
+    }
   }
 
   return "none";
+}
+
+function persistTokenToAuthStorage(token: string, paramName: string): void {
+  sessionStorage.setItem(LEGACY_ACCESS_TOKEN_KEY, token);
+  localStorage.setItem(AUTH_STORAGE_KEYS.accessToken, token);
+  if (paramName === "token") {
+    localStorage.setItem(AUTH_STORAGE_KEYS.token, token);
+  }
 }
 
 export function resolveAccessToken(): string | null {
@@ -78,7 +98,11 @@ export function resolveAccessToken(): string | null {
   const fromUrl = readTokenFromUrl();
 
   if (fromUrl) {
-    sessionStorage.setItem(TOOL_ACCESS_TOKEN_KEY, fromUrl);
+    const searchParams = new URLSearchParams(window.location.search);
+    const paramName =
+      searchParams.get("access_token")?.trim() ? "access_token" : "token";
+    persistTokenToAuthStorage(fromUrl, paramName);
+
     const cleanedUrl = buildCleanUrl();
     window.history.replaceState({}, "", cleanedUrl);
 
@@ -88,7 +112,7 @@ export function resolveAccessToken(): string | null {
         fromUrl
       );
       authDebugClientInfo("sessionStorage-write", {
-        key: TOOL_ACCESS_TOKEN_KEY,
+        key: LEGACY_ACCESS_TOKEN_KEY,
         tool_access_token_saved: true,
         saved_length: fromUrl.length,
       });
@@ -98,7 +122,12 @@ export function resolveAccessToken(): string | null {
     return fromUrl;
   }
 
-  const stored = sessionStorage.getItem(TOOL_ACCESS_TOKEN_KEY);
+  const fromLocal =
+    localStorage.getItem(AUTH_STORAGE_KEYS.accessToken) ??
+    localStorage.getItem(AUTH_STORAGE_KEYS.token);
+  if (fromLocal) return fromLocal;
+
+  const stored = sessionStorage.getItem(LEGACY_ACCESS_TOKEN_KEY);
 
   if (isClientAuthDebugEnabled()) {
     logTokenAcquisition("session_storage", stored);
@@ -115,12 +144,18 @@ export function captureAccessTokenFromUrl(): string | null {
 
 export function getStoredAccessToken(): string | null {
   if (typeof window === "undefined") return null;
-  return sessionStorage.getItem(TOOL_ACCESS_TOKEN_KEY);
+  return (
+    localStorage.getItem(AUTH_STORAGE_KEYS.accessToken) ??
+    localStorage.getItem(AUTH_STORAGE_KEYS.token) ??
+    sessionStorage.getItem(LEGACY_ACCESS_TOKEN_KEY)
+  );
 }
 
 export function clearStoredAccessToken(): void {
   if (typeof window === "undefined") return;
-  sessionStorage.removeItem(TOOL_ACCESS_TOKEN_KEY);
+  sessionStorage.removeItem(LEGACY_ACCESS_TOKEN_KEY);
+  localStorage.removeItem(AUTH_STORAGE_KEYS.accessToken);
+  localStorage.removeItem(AUTH_STORAGE_KEYS.token);
 }
 
 export function getDashboardBaseUrl(): string {

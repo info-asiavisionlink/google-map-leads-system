@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authDebugError, authDebugInfo, maskToken } from "@/lib/authDebug";
+import { authDebugError, authDebugInfo } from "@/lib/authDebug";
 import {
   API_ERROR_MESSAGE,
   calculateCreditCost,
@@ -15,9 +15,7 @@ import {
 import {
   consumeDashboardCredits,
   DashboardCreditsError,
-  getAccessTokenFromRequest,
   hasEnoughCredit,
-  verifyToolAccessToken,
 } from "@/lib/dashboardCredits";
 import {
   buildSearchQuery,
@@ -27,12 +25,18 @@ import {
   toPlaceSearchResult,
 } from "@/lib/googleMaps";
 import { PREFECTURES } from "@/lib/prefectures";
+import {
+  extractSearchAuth,
+  resolveSearchAuthContext,
+  type SearchAuthBody,
+} from "@/lib/searchAuth";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { buildTsv } from "@/lib/tsv";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
 
-type SearchBody = {
+type SearchBody = SearchAuthBody & {
   area?: string;
+  prefecture?: string;
   keyword1?: string;
   keyword2?: string;
 };
@@ -45,7 +49,7 @@ function jsonResponse(
 }
 
 function validateBody(body: SearchBody): string | null {
-  const area = body.area?.trim();
+  const area = body.area?.trim() || body.prefecture?.trim();
   const keyword1 = body.keyword1?.trim();
 
   if (!area) return "都道府県を選択してください";
@@ -54,6 +58,10 @@ function validateBody(body: SearchBody): string | null {
   }
   if (!keyword1) return "大カテゴリー・業種を入力してください";
   return null;
+}
+
+function resolvePrefecture(body: SearchBody): string {
+  return (body.area?.trim() || body.prefecture?.trim()) as string;
 }
 
 async function getExcludedPlaceIds(userId: string): Promise<Set<string>> {
@@ -117,16 +125,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const accessToken = getAccessTokenFromRequest(request);
-  const tokenMeta = maskToken(accessToken);
-
-  authDebugInfo("api-places-search", {
-    authorization_header_exists: tokenMeta.token_exists,
-    token_length: tokenMeta.token_length,
-  });
-
-  if (!accessToken) {
-    authDebugError("api-places-search", { failure: "missing_token" });
+  const extractedAuth = extractSearchAuth(request, body);
+  if (!extractedAuth) {
+    authDebugError("api-places-search", { failure: "missing_user_or_token" });
     return jsonResponse(
       {
         status: "error",
@@ -139,11 +140,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let verifyResult;
+  let authContext;
   try {
-    verifyResult = await verifyToolAccessToken(accessToken);
+    authContext = await resolveSearchAuthContext(
+      extractedAuth,
+      body.current_credit
+    );
   } catch (err) {
-    authDebugError("api-places-search", { failure: "verify_before_search" }, err);
+    authDebugError("api-places-search", { failure: "auth_resolve" }, err);
     const message =
       err instanceof DashboardCreditsError
         ? err.message
@@ -160,10 +164,17 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const userId = verifyResult.user.id;
-  const currentCredit = verifyResult.credit;
+  const userId = authContext.userId;
+  const accessToken = authContext.accessToken;
+  const currentCredit = authContext.currentCredit;
 
-  const prefecture = body.area!.trim();
+  authDebugInfo("api-places-search", {
+    user_id: userId,
+    verified_via_dashboard: authContext.verifiedViaDashboard,
+    current_credit: currentCredit,
+  });
+
+  const prefecture = resolvePrefecture(body);
   const keyword1 = body.keyword1!.trim();
   const keyword2 = body.keyword2?.trim() || null;
 

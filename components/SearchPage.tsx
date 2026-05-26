@@ -6,6 +6,15 @@ import ResultsTable from "@/components/ResultsTable";
 import SearchForm, { type SearchFormValues } from "@/components/SearchForm";
 import ToolAuthBar from "@/components/ToolAuthBar";
 import {
+  getEffectiveToken,
+  logAuthStateDebug,
+} from "@/lib/authState";
+import {
+  bootstrapClientAuthDebug,
+  isClientAuthDebugEnabled,
+  logSearchApiResponse,
+} from "@/lib/authDebugClient";
+import {
   API_ERROR_MESSAGE,
   CREDIT_CONSUME_FAILED_MESSAGE,
   INSUFFICIENT_CREDIT_MESSAGE,
@@ -15,33 +24,9 @@ import {
   SAVE_RESULTS_FAILED_MESSAGE,
   TOKEN_AUTH_EXPIRED_MESSAGE,
 } from "@/lib/constants";
-import {
-  clearStoredAccessToken,
-  resolveAccessToken,
-} from "@/lib/toolToken";
-import { clearToolUserSession } from "@/lib/toolUserSession";
-import {
-  bootstrapClientAuthDebug,
-  isClientAuthDebugEnabled,
-  logPageLoadContext,
-  logSearchApiResponse,
-} from "@/lib/authDebugClient";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
-import { useToolAuth } from "@/lib/useToolAuth";
-import { useToolUser } from "@/lib/useToolUser";
-import { resolveToolUserQuery } from "@/lib/toolUserQuery";
-import { useEffect, useState } from "react";
-
-function authHeaders(token: string): HeadersInit {
-  return {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-  };
-}
-
-function bootstrapAccessToken(): void {
-  resolveAccessToken();
-}
+import { useAuthState } from "@/lib/useAuthState";
+import { useState } from "react";
 
 function formatCredit(n: number): string {
   return n.toLocaleString("ja-JP");
@@ -49,33 +34,15 @@ function formatCredit(n: number): string {
 
 export default function SearchPage() {
   bootstrapClientAuthDebug();
-  bootstrapAccessToken();
-
-  useEffect(() => {
-    if (!isClientAuthDebugEnabled()) return;
-    logPageLoadContext();
-    const q = resolveToolUserQuery();
-    console.info("[tool-user-mapping] page_load_query", {
-      ok: q.ok,
-      href: typeof window !== "undefined" ? window.location.href : "",
-      search: typeof window !== "undefined" ? window.location.search : "",
-    });
-  }, []);
 
   const {
-    user,
-    isLoading: isUserLoading,
-    isAuthenticated: isUserAuthenticated,
-    remainingCredit,
-    patchUserCredit,
-  } = useToolUser();
-
-  const {
-    accessToken,
-    verify,
-    refreshVerify,
-    patchRemainingCredit,
-  } = useToolAuth();
+    authState,
+    effectiveToken,
+    isLoading: isAuthLoading,
+    isAuthenticated,
+    patchCredit,
+    clearAuth,
+  } = useAuthState();
 
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState<PlaceSearchResult[]>([]);
@@ -93,24 +60,28 @@ export default function SearchPage() {
     null
   );
 
-  const displayCredit =
-    remainingCredit ?? user?.credit ?? verify?.credit ?? null;
+  const displayCredit = authState?.credit ?? null;
 
   async function handleSearch(values: SearchFormValues) {
     setSearchError(null);
 
-    if (!isUserAuthenticated || !user) {
-      setSearchError(NOT_LOGGED_IN_MESSAGE);
+    const token = effectiveToken ?? getEffectiveToken(authState);
+    const userId = authState?.userId?.trim();
+
+    logAuthStateDebug("handleSearch", authState, {
+      hasUserId: Boolean(userId),
+      hasToken: Boolean(token),
+    });
+
+    if (!userId || !token) {
+      setSearchError(
+        !userId ? NOT_LOGGED_IN_MESSAGE : TOKEN_AUTH_EXPIRED_MESSAGE
+      );
       return;
     }
 
-    if (!accessToken || !verify) {
-      setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
-      return;
-    }
-
-    const creditBalance = remainingCredit ?? user.credit ?? verify.credit;
-    if (creditBalance < MIN_CREDIT_TO_SEARCH) {
+    const creditBalance = authState?.credit;
+    if (creditBalance === undefined || creditBalance < MIN_CREDIT_TO_SEARCH) {
       setSearchError(INSUFFICIENT_CREDIT_MESSAGE);
       return;
     }
@@ -124,15 +95,35 @@ export default function SearchPage() {
     setLastCreditConsumed(null);
     setLastRemainingCredit(null);
 
+    const requestHeaders: HeadersInit = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "x-user-id": userId,
+    };
+
+    const requestBody = {
+      area: values.area,
+      prefecture: values.area,
+      keyword1: values.keyword1,
+      keyword2: values.keyword2 || undefined,
+      user_id: userId,
+      access_token: token,
+      current_credit: creditBalance,
+    };
+
+    if (isClientAuthDebugEnabled()) {
+      logAuthStateDebug("search_request", authState, {
+        authorization_prefix: token.slice(0, 5) + "***",
+        x_user_id: userId,
+        body_user_id: userId,
+      });
+    }
+
     try {
       const res = await fetch("/api/places/search", {
         method: "POST",
-        headers: authHeaders(accessToken),
-        body: JSON.stringify({
-          area: values.area,
-          keyword1: values.keyword1,
-          keyword2: values.keyword2 || undefined,
-        }),
+        headers: requestHeaders,
+        body: JSON.stringify(requestBody),
       });
 
       const data = (await res.json()) as SearchApiResponse;
@@ -145,13 +136,11 @@ export default function SearchPage() {
       });
 
       if (data.credit !== undefined && data.credit !== null) {
-        patchRemainingCredit(data.credit);
-        patchUserCredit(data.credit);
+        patchCredit(data.credit);
       }
 
       if (res.status === 401 || data.code === "unauthorized") {
-        clearStoredAccessToken();
-        clearToolUserSession();
+        clearAuth();
         setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
         return;
       }
@@ -159,8 +148,7 @@ export default function SearchPage() {
       if (res.status === 402 || data.code === "insufficient_credit") {
         setSearchError(data.message || INSUFFICIENT_CREDIT_MESSAGE);
         if (data.credit !== undefined && data.credit !== null) {
-          patchRemainingCredit(data.credit);
-          patchUserCredit(data.credit);
+          patchCredit(data.credit);
         }
         return;
       }
@@ -203,7 +191,6 @@ export default function SearchPage() {
         setLastResultCount(data.resultCount ?? data.results.length);
         setLastCreditConsumed(data.creditConsumed ?? null);
         if (data.credit != null) setLastRemainingCredit(data.credit);
-        await refreshVerify();
       }
     } catch {
       setSearchError(API_ERROR_MESSAGE);
@@ -218,7 +205,7 @@ export default function SearchPage() {
       <AuthDebugPanel />
 
       <div className="mb-4">
-        <ToolAuthBar user={user} isLoading={isUserLoading} />
+        <ToolAuthBar authState={authState} isLoading={isAuthLoading} />
       </div>
 
       <header className="mb-8 rounded-2xl border border-blue-100 bg-white p-6 shadow-sm sm:p-8">
@@ -241,14 +228,16 @@ export default function SearchPage() {
         </div>
       </header>
 
-      {displayCredit != null && displayCredit < MIN_CREDIT_TO_SEARCH && (
-        <div
-          role="alert"
-          className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-        >
-          {INSUFFICIENT_CREDIT_MESSAGE}
-        </div>
-      )}
+      {isAuthenticated &&
+        displayCredit != null &&
+        displayCredit < MIN_CREDIT_TO_SEARCH && (
+          <div
+            role="alert"
+            className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+          >
+            {INSUFFICIENT_CREDIT_MESSAGE}
+          </div>
+        )}
 
       <SearchForm
         onSearch={handleSearch}
