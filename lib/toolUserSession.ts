@@ -1,3 +1,8 @@
+import {
+  authDebugClientInfo,
+  isClientAuthDebugEnabled,
+  logSessionStorageState,
+} from "@/lib/authDebugClient";
 import type { ToolVerifyResult } from "@/lib/toolVerify";
 
 /** sessionStorage キー（ユーザー正本は管理システム側。ここは表示用キャッシュのみ） */
@@ -25,6 +30,16 @@ export function toolVerifyResultToSession(
 export function saveToolUserSession(session: ToolUserSession): void {
   if (typeof window === "undefined") return;
   sessionStorage.setItem(TOOL_USER_SESSION_KEY, JSON.stringify(session));
+
+  if (isClientAuthDebugEnabled()) {
+    authDebugClientInfo("sessionStorage-write", {
+      key: TOOL_USER_SESSION_KEY,
+      tool_user_session_saved: true,
+      user_id: session.user_id,
+      remaining_credit: session.remaining_credit,
+    });
+    logSessionStorageState();
+  }
 }
 
 export function getToolUserSession(): ToolUserSession | null {

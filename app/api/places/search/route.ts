@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authDebugError, authDebugInfo, maskToken } from "@/lib/authDebug";
 import {
   API_ERROR_MESSAGE,
   CREDIT_CONSUME_FAILED_MESSAGE,
@@ -74,6 +75,8 @@ async function getExcludedPlaceIds(userId: string): Promise<Set<string>> {
 }
 
 export async function POST(request: NextRequest) {
+  authDebugInfo("api-places-search", { step: "request_received" });
+
   let body: SearchBody;
 
   try {
@@ -104,7 +107,15 @@ export async function POST(request: NextRequest) {
   }
 
   const accessToken = getAccessTokenFromRequest(request);
+  const tokenMeta = maskToken(accessToken);
+
+  authDebugInfo("api-places-search", {
+    authorization_header_exists: tokenMeta.token_exists,
+    token_length: tokenMeta.token_length,
+  });
+
   if (!accessToken) {
+    authDebugError("api-places-search", { failure: "missing_token" });
     return jsonResponse(
       {
         status: "error",
@@ -121,7 +132,7 @@ export async function POST(request: NextRequest) {
   try {
     verifyResult = await verifyToolAccessToken(accessToken);
   } catch (err) {
-    console.error("トークン検証エラー:", err);
+    authDebugError("api-places-search", { failure: "verify_before_search" }, err);
     const message =
       err instanceof DashboardCreditsError
         ? err.message
@@ -282,7 +293,11 @@ export async function POST(request: NextRequest) {
       );
       creditAfter = consumeResult.credit;
     } catch (consumeErr) {
-      console.error("クレジット消費APIエラー:", consumeErr);
+      authDebugError(
+        "api-places-search",
+        { failure: "consume_api", endpoint: "POST /api/credits/consume" },
+        consumeErr
+      );
       const detail =
         consumeErr instanceof DashboardCreditsError
           ? consumeErr.message

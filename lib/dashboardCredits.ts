@@ -1,4 +1,12 @@
 import { NextRequest } from "next/server";
+import {
+  authDebugError,
+  authDebugInfo,
+  getAuthSystemApiUrlInfo,
+  maskToken,
+  resolveAuthSystemApiUrl,
+  safeJsonForLog,
+} from "@/lib/authDebug";
 import { TOOL_KEY } from "@/lib/constants";
 import {
   extractErrorFromBody,
@@ -27,11 +35,13 @@ export class DashboardCreditsError extends Error {
 }
 
 export function getDashboardBaseUrl(): string {
-  const url = process.env.NEXT_PUBLIC_DASHBOARD_BASE_URL?.trim();
+  const url = resolveAuthSystemApiUrl();
   if (!url) {
-    throw new Error("NEXT_PUBLIC_DASHBOARD_BASE_URL が設定されていません");
+    throw new Error(
+      "管理システム API URL が未設定です (NEXT_PUBLIC_DASHBOARD_BASE_URL または AUTH_SYSTEM_API_URL)"
+    );
   }
-  return url.replace(/\/$/, "");
+  return url;
 }
 
 export function getToolKey(): string {
@@ -63,8 +73,21 @@ export async function verifyToolAccessToken(
   accessToken: string
 ): Promise<ToolVerifyResult> {
   const baseUrl = getDashboardBaseUrl();
+  const apiInfo = getAuthSystemApiUrlInfo();
+  const verifyUrl = `${baseUrl}/api/tools/token/verify`;
+  const tokenMeta = maskToken(accessToken);
 
-  const res = await fetch(`${baseUrl}/api/tools/token/verify`, {
+  authDebugInfo("auth-system-verify-request", {
+    AUTH_SYSTEM_API_URL: baseUrl,
+    env_source: apiInfo.source,
+    request_url: verifyUrl,
+    authorization_header_exists: true,
+    token_exists: tokenMeta.token_exists,
+    token_length: tokenMeta.token_length,
+    tool_key: getToolKey(),
+  });
+
+  const res = await fetch(verifyUrl, {
     method: "GET",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -79,6 +102,12 @@ export async function verifyToolAccessToken(
     body = null;
   }
 
+  authDebugInfo("auth-system-verify-response", {
+    response_status: res.status,
+    response_ok: res.ok,
+    response_body: safeJsonForLog(body),
+  });
+
   if (!res.ok) {
     const code =
       typeof body === "object" && body !== null && "code" in body
@@ -88,14 +117,30 @@ export async function verifyToolAccessToken(
       body,
       "トークンの検証に失敗しました"
     );
-    console.error("verify API エラー:", res.status, body);
+    authDebugError("auth-system-verify-failed", {
+      response_status: res.status,
+      error_code: code ?? "(none)",
+      error_message: message,
+      response_body: safeJsonForLog(body),
+    });
     throw new DashboardCreditsError(message, res.status, code);
   }
 
   try {
-    return parseToolVerifyResponse(body);
+    const parsed = parseToolVerifyResponse(body);
+    authDebugInfo("auth-system-verify-success", {
+      user_id: parsed.user.id,
+      username: parsed.user.username ?? "(null)",
+      email: parsed.user.email,
+      remaining_credit: parsed.credit,
+    });
+    return parsed;
   } catch (parseErr) {
-    console.error("verify レスポンスパースエラー:", body, parseErr);
+    authDebugError(
+      "auth-system-verify-parse-error",
+      { response_body: safeJsonForLog(body) },
+      parseErr
+    );
     throw new DashboardCreditsError(
       parseErr instanceof Error
         ? parseErr.message
@@ -133,8 +178,19 @@ export async function consumeDashboardCredits(
   externalRequestId: string
 ): Promise<ConsumeResult> {
   const baseUrl = getDashboardBaseUrl();
+  const consumeUrl = `${baseUrl}/api/credits/consume`;
+  const toolKey = getToolKey();
 
-  const res = await fetch(`${baseUrl}/api/credits/consume`, {
+  authDebugInfo("auth-system-consume-request", {
+    request_url: consumeUrl,
+    method: "POST",
+    tool_key: toolKey,
+    external_request_id: externalRequestId,
+    authorization_header_exists: true,
+    token_length: maskToken(accessToken).token_length,
+  });
+
+  const res = await fetch(consumeUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -142,7 +198,7 @@ export async function consumeDashboardCredits(
     },
     cache: "no-store",
     body: JSON.stringify({
-      tool_key: getToolKey(),
+      tool_key: toolKey,
       external_request_id: externalRequestId,
     }),
   });
@@ -163,8 +219,21 @@ export async function consumeDashboardCredits(
       body,
       "クレジットの消費に失敗しました"
     );
+    authDebugError("auth-system-consume-failed", {
+      response_status: res.status,
+      error_code: code ?? "(none)",
+      error_message: message,
+      response_body: safeJsonForLog(body),
+    });
     throw new DashboardCreditsError(message, res.status, code);
   }
 
-  return { credit: parseCreditFromBody(body) };
+  const credit = parseCreditFromBody(body);
+  authDebugInfo("auth-system-consume-success", {
+    response_status: res.status,
+    credit_after: credit,
+    response_body: safeJsonForLog(body),
+  });
+
+  return { credit };
 }

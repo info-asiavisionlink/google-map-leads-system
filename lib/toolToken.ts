@@ -1,3 +1,12 @@
+"use client";
+
+import {
+  authDebugClientInfo,
+  isClientAuthDebugEnabled,
+  logSessionStorageState,
+  logTokenAcquisition,
+} from "@/lib/authDebugClient";
+
 /** sessionStorage キー（localStorage は使わない） */
 export const TOOL_ACCESS_TOKEN_KEY = "tool_access_token";
 
@@ -45,19 +54,58 @@ function buildCleanUrl(): string {
  * URL の access_token を sessionStorage に保存し、URL から削除する。
  * クライアント専用（ブラウザ上でのみ呼び出すこと）。
  */
+function detectTokenSource(): "url_query" | "url_hash" | "none" {
+  if (typeof window === "undefined") return "none";
+
+  const searchParams = new URLSearchParams(window.location.search);
+  if (searchParams.get(TOKEN_PARAM)?.trim()) return "url_query";
+
+  const hash = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  if (hash) {
+    const hashParams = new URLSearchParams(hash);
+    if (hashParams.get(TOKEN_PARAM)?.trim()) return "url_hash";
+  }
+
+  return "none";
+}
+
 export function resolveAccessToken(): string | null {
   if (typeof window === "undefined") return null;
 
+  const urlSource = detectTokenSource();
   const fromUrl = readTokenFromUrl();
 
   if (fromUrl) {
     sessionStorage.setItem(TOOL_ACCESS_TOKEN_KEY, fromUrl);
     const cleanedUrl = buildCleanUrl();
     window.history.replaceState({}, "", cleanedUrl);
+
+    if (isClientAuthDebugEnabled()) {
+      logTokenAcquisition(
+        urlSource === "none" ? "url_query" : urlSource,
+        fromUrl
+      );
+      authDebugClientInfo("sessionStorage-write", {
+        key: TOOL_ACCESS_TOKEN_KEY,
+        tool_access_token_saved: true,
+        saved_length: fromUrl.length,
+      });
+      logSessionStorageState();
+    }
+
     return fromUrl;
   }
 
-  return sessionStorage.getItem(TOOL_ACCESS_TOKEN_KEY);
+  const stored = sessionStorage.getItem(TOOL_ACCESS_TOKEN_KEY);
+
+  if (isClientAuthDebugEnabled()) {
+    logTokenAcquisition("session_storage", stored);
+    logSessionStorageState();
+  }
+
+  return stored;
 }
 
 /** @deprecated resolveAccessToken を使用 */

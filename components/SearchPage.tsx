@@ -1,5 +1,6 @@
 "use client";
 
+import AuthDebugPanel from "@/components/AuthDebugPanel";
 import CopyTsvButton from "@/components/CopyTsvButton";
 import ResultsTable from "@/components/ResultsTable";
 import SearchForm, { type SearchFormValues } from "@/components/SearchForm";
@@ -16,9 +17,17 @@ import {
   resolveAccessToken,
 } from "@/lib/toolToken";
 import { clearToolUserSession } from "@/lib/toolUserSession";
+import {
+  authDebugClientError,
+  authDebugClientInfo,
+  bootstrapClientAuthDebug,
+  isClientAuthDebugEnabled,
+  logPageLoadContext,
+  logSearchApiResponse,
+} from "@/lib/authDebugClient";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
 import { useToolAuth } from "@/lib/useToolAuth";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 function authHeaders(token: string): HeadersInit {
   return {
@@ -33,7 +42,13 @@ function bootstrapAccessToken(): void {
 }
 
 export default function SearchPage() {
+  bootstrapClientAuthDebug();
   bootstrapAccessToken();
+
+  useEffect(() => {
+    if (!isClientAuthDebugEnabled()) return;
+    logPageLoadContext();
+  }, []);
 
   const {
     status: authStatus,
@@ -61,6 +76,11 @@ export default function SearchPage() {
 
   async function handleSearch(values: SearchFormValues) {
     if (!accessToken || !verify) {
+      authDebugClientError("search-blocked", {
+        reason: "not_authenticated",
+        has_access_token: Boolean(accessToken),
+        has_verify: Boolean(verify),
+      });
       setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
       return;
     }
@@ -90,6 +110,13 @@ export default function SearchPage() {
       });
 
       const data = (await res.json()) as SearchApiResponse;
+
+      logSearchApiResponse({
+        response_status: res.status,
+        code: data.code,
+        message: data.message,
+        credit: data.credit,
+      });
 
       setStatus(data.status);
       setMessage(data.message);
@@ -147,6 +174,8 @@ export default function SearchPage() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:py-10">
+      <AuthDebugPanel />
+
       <div className="mb-4">
         <ToolAuthBar
           verify={verify}
