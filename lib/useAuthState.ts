@@ -2,7 +2,6 @@
 
 import {
   clearAuthState,
-  getEffectiveToken,
   isAuthStateComplete,
   logAuthStateDebug,
   resolveAuthState,
@@ -56,12 +55,10 @@ export function useAuthState() {
     });
   }, []);
 
-  const effectiveToken = getEffectiveToken(authState);
   const isAuthenticated = isAuthStateComplete(authState);
 
   return {
     authState,
-    effectiveToken,
     isLoading,
     isAuthenticated,
     patchCredit,

@@ -5,10 +5,7 @@ import CopyTsvButton from "@/components/CopyTsvButton";
 import ResultsTable from "@/components/ResultsTable";
 import SearchForm, { type SearchFormValues } from "@/components/SearchForm";
 import ToolAuthBar from "@/components/ToolAuthBar";
-import {
-  getEffectiveToken,
-  logAuthStateDebug,
-} from "@/lib/authState";
+import { logAuthStateDebug } from "@/lib/authState";
 import {
   bootstrapClientAuthDebug,
   isClientAuthDebugEnabled,
@@ -19,10 +16,9 @@ import {
   CREDIT_CONSUME_FAILED_MESSAGE,
   INSUFFICIENT_CREDIT_MESSAGE,
   MIN_CREDIT_TO_SEARCH,
-  NOT_LOGGED_IN_MESSAGE,
   NO_RESULTS_FOUND_MESSAGE,
   SAVE_RESULTS_FAILED_MESSAGE,
-  TOKEN_AUTH_EXPIRED_MESSAGE,
+  USER_INFO_MISSING_MESSAGE,
 } from "@/lib/constants";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
 import { useAuthState } from "@/lib/useAuthState";
@@ -37,7 +33,6 @@ export default function SearchPage() {
 
   const {
     authState,
-    effectiveToken,
     isLoading: isAuthLoading,
     isAuthenticated,
     patchCredit,
@@ -65,18 +60,15 @@ export default function SearchPage() {
   async function handleSearch(values: SearchFormValues) {
     setSearchError(null);
 
-    const token = effectiveToken ?? getEffectiveToken(authState);
     const userId = authState?.userId?.trim();
 
     logAuthStateDebug("handleSearch", authState, {
-      hasUserId: Boolean(userId),
-      hasToken: Boolean(token),
+      body_user_id: userId ?? "(empty)",
+      x_user_id: userId ?? "(empty)",
     });
 
-    if (!userId || !token) {
-      setSearchError(
-        !userId ? NOT_LOGGED_IN_MESSAGE : TOKEN_AUTH_EXPIRED_MESSAGE
-      );
+    if (!userId) {
+      setSearchError(USER_INFO_MISSING_MESSAGE);
       return;
     }
 
@@ -97,23 +89,19 @@ export default function SearchPage() {
 
     const requestHeaders: HeadersInit = {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
       "x-user-id": userId,
     };
 
     const requestBody = {
-      area: values.area,
+      user_id: userId,
+      current_credit: creditBalance,
       prefecture: values.area,
       keyword1: values.keyword1,
       keyword2: values.keyword2 || undefined,
-      user_id: userId,
-      access_token: token,
-      current_credit: creditBalance,
     };
 
     if (isClientAuthDebugEnabled()) {
       logAuthStateDebug("search_request", authState, {
-        authorization_prefix: token.slice(0, 5) + "***",
         x_user_id: userId,
         body_user_id: userId,
       });
@@ -141,7 +129,7 @@ export default function SearchPage() {
 
       if (res.status === 401 || data.code === "unauthorized") {
         clearAuth();
-        setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
+        setSearchError(data.message || USER_INFO_MISSING_MESSAGE);
         return;
       }
 

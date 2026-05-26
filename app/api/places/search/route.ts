@@ -10,7 +10,7 @@ import {
   MIN_CREDIT_TO_SEARCH,
   NO_RESULTS_FOUND_MESSAGE,
   SAVE_RESULTS_FAILED_MESSAGE,
-  TOKEN_AUTH_EXPIRED_MESSAGE,
+  USER_INFO_MISSING_MESSAGE,
 } from "@/lib/constants";
 import {
   consumeDashboardCredits,
@@ -26,7 +26,7 @@ import {
 } from "@/lib/googleMaps";
 import { PREFECTURES } from "@/lib/prefectures";
 import {
-  extractSearchAuth,
+  extractSearchUserId,
   resolveSearchAuthContext,
   type SearchAuthBody,
 } from "@/lib/searchAuth";
@@ -125,13 +125,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const extractedAuth = extractSearchAuth(request, body);
-  if (!extractedAuth) {
-    authDebugError("api-places-search", { failure: "missing_user_or_token" });
+  const userId = extractSearchUserId(request, body);
+  if (!userId) {
+    authDebugError("api-places-search", { failure: "missing_user_id" });
     return jsonResponse(
       {
         status: "error",
-        message: TOKEN_AUTH_EXPIRED_MESSAGE,
+        message: USER_INFO_MISSING_MESSAGE,
         results: [],
         copyText: "",
         code: "unauthorized",
@@ -140,37 +140,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let authContext;
-  try {
-    authContext = await resolveSearchAuthContext(
-      extractedAuth,
-      body.current_credit
-    );
-  } catch (err) {
-    authDebugError("api-places-search", { failure: "auth_resolve" }, err);
-    const message =
-      err instanceof DashboardCreditsError
-        ? err.message
-        : TOKEN_AUTH_EXPIRED_MESSAGE;
-    return jsonResponse(
-      {
-        status: "error",
-        message,
-        results: [],
-        copyText: "",
-        code: "unauthorized",
-      },
-      err instanceof DashboardCreditsError ? err.status : 401
-    );
-  }
-
-  const userId = authContext.userId;
-  const accessToken = authContext.accessToken;
+  const authContext = resolveSearchAuthContext(userId, body.current_credit);
   const currentCredit = authContext.currentCredit;
 
   authDebugInfo("api-places-search", {
     user_id: userId,
-    verified_via_dashboard: authContext.verifiedViaDashboard,
     current_credit: currentCredit,
   });
 
@@ -281,7 +255,6 @@ export async function POST(request: NextRequest) {
         amount: actualCreditCost,
         resultCount: results.length,
         externalRequestId: searchRequestId,
-        accessToken,
       });
       creditAfter = consumeResult.credit;
     } catch (consumeErr) {

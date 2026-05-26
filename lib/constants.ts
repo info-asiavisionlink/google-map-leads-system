@@ -25,6 +25,9 @@ export const TOKEN_AUTH_EXPIRED_MESSAGE =
 export const NOT_LOGGED_IN_MESSAGE =
   "未ログインです。ダッシュボードから利用してください。";
 
+export const USER_INFO_MISSING_MESSAGE =
+  "ユーザー情報が取得できません。ダッシュボードから開いてください。";
+
 export const LOGIN_ERROR_MESSAGE =
   "ログインに失敗しました。ダッシュボードから再度ツールを開いてください。";
 

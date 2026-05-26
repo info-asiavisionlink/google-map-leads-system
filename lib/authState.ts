@@ -188,8 +188,7 @@ export function getEffectiveToken(state: AuthState | null): string | null {
 }
 
 export function isAuthStateComplete(state: AuthState | null): state is AuthState {
-  if (!state?.userId?.trim()) return false;
-  return Boolean(getEffectiveToken(state));
+  return Boolean(state?.userId?.trim());
 }
 
 function mergeAuthState(
@@ -297,12 +296,6 @@ export function resolveAuthStateWithoutUrl(): AuthState | null {
   return mergeAuthState({}, stored);
 }
 
-export function maskTokenForLog(token: string | undefined | null): string {
-  if (!token) return "(empty)";
-  if (token.length <= 5) return `${token.slice(0, 1)}***`;
-  return `${token.slice(0, 5)}***`;
-}
-
 export function logAuthStateDebug(
   label: string,
   state: AuthState | null,
@@ -312,9 +305,6 @@ export function logAuthStateDebug(
 
   console.log(`[authState] ${label}`, {
     userId: state?.userId ?? "(empty)",
-    accessToken: maskTokenForLog(state?.accessToken),
-    token: maskTokenForLog(state?.token),
-    effectiveToken: maskTokenForLog(getEffectiveToken(state)),
     credit: state?.credit ?? "(n/a)",
     email: state?.email ?? "(n/a)",
     nickname: state?.nickname ?? "(n/a)",
