@@ -51,7 +51,11 @@ import {
   placeSearchResultToRow,
 } from "@/lib/searchPersistence";
 import { buildTsv } from "@/lib/tsv";
-import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
+import type {
+  PlaceSearchResult,
+  SearchApiResponse,
+  SearchStopReason,
+} from "@/lib/types";
 
 /** 1回の検索ボタンで目指す新規保存件数 */
 const TARGET_RESULTS = MAX_RESULTS;
@@ -60,6 +64,9 @@ const BATCH_SIZE = SEARCH_BATCH_SIZE;
 
 /** 長時間の検索ループ用（デプロイ環境の上限に合わせて調整） */
 export const maxDuration = 300;
+
+/** ループ停止の安全マージン（Vercel 300秒上限の手前） */
+const TIMEOUT_NEAR_LIMIT_MS = 270_000;
 
 type SearchBody = SearchAuthBody & {
   area?: string;
@@ -131,6 +138,23 @@ function logSearchLoop(meta: {
 }): void {
   if (process.env.NODE_ENV === "production") return;
   console.log("[search-loop]", meta);
+}
+
+function logSearchComplete(meta: {
+  totalSaved: number;
+  currentStep: number;
+  currentDirection: number;
+  spiralDistanceKm: number;
+  stopReason: SearchStopReason;
+}): void {
+  if (process.env.NODE_ENV === "production") return;
+  console.log({
+    totalSaved: meta.totalSaved,
+    currentStep: meta.currentStep,
+    currentDirection: meta.currentDirection,
+    spiralDistanceKm: meta.spiralDistanceKm,
+    stopReason: meta.stopReason,
+  });
 }
 
 function buildSuccessMessage(params: {
@@ -296,6 +320,8 @@ export async function POST(request: NextRequest) {
     const lifetimeSavedBaseline = progressRecord?.total_saved_count ?? 0;
     let duplicateExclusionCount = 0;
     let saveFailed = false;
+    let stopReason: SearchStopReason | null = null;
+    const searchStartedAt = Date.now();
 
     function buildRuntimeExcluded(): Set<string> {
       return new Set([
@@ -331,8 +357,13 @@ export async function POST(request: NextRequest) {
       return unique;
     }
 
-    // 50件ずつ取得・保存し、新規200件（または終了条件）まで続けてから1回だけレスポンス
+    // 50件ずつ取得・保存。200件到達 or 都道府県全域探索完了まで継続（空地点・重複のみでは止めない）
     while (savedResults.length < TARGET_RESULTS) {
+      if (Date.now() - searchStartedAt >= TIMEOUT_NEAR_LIMIT_MS) {
+        stopReason = "timeout_near_limit";
+        break;
+      }
+
       const batchCandidates = await searcher.fetchNextBatch(
         BATCH_SIZE,
         buildRuntimeExcluded()
@@ -340,6 +371,7 @@ export async function POST(request: NextRequest) {
 
       if (batchCandidates.length === 0) {
         if (searcher.isExhausted()) {
+          stopReason = "prefecture_fully_scanned";
           break;
         }
         continue;
@@ -354,6 +386,7 @@ export async function POST(request: NextRequest) {
           step: searcher.getPosition().currentStep,
         });
         if (searcher.isExhausted()) {
+          stopReason = "prefecture_fully_scanned";
           break;
         }
         continue;
@@ -375,6 +408,7 @@ export async function POST(request: NextRequest) {
 
       if (!insertOutcome.ok) {
         saveFailed = true;
+        stopReason = "save_error";
         logSearchResultsSaveFailure(insertOutcome.error, {
           attemptedCount: resultRows.length,
           sampleRow: resultRows[0] ?? null,
@@ -420,13 +454,31 @@ export async function POST(request: NextRequest) {
       });
 
       if (savedResults.length >= TARGET_RESULTS) {
+        stopReason = "reached_target";
         break;
       }
     }
 
     const finalPosition = searcher.getPosition();
-    const isRegionExhausted =
-      savedResults.length === 0 && searcher.isExhausted();
+    const spiralDistanceKm = searcher.getSpiralDistanceKm();
+
+    if (!stopReason) {
+      if (savedResults.length >= TARGET_RESULTS) {
+        stopReason = "reached_target";
+      } else if (searcher.isExhausted()) {
+        stopReason = "prefecture_fully_scanned";
+      }
+    }
+
+    logSearchComplete({
+      totalSaved: savedResults.length,
+      currentStep: finalPosition.currentStep,
+      currentDirection: finalPosition.currentDirection,
+      spiralDistanceKm,
+      stopReason: stopReason ?? "prefecture_fully_scanned",
+    });
+
+    const isRegionExhausted = searcher.isExhausted();
 
     await upsertSearchProgress(supabase, {
       userId,
@@ -470,6 +522,7 @@ export async function POST(request: NextRequest) {
             fetchedCount: 0,
             savedCount: 0,
             creditConsumed: 0,
+            stopReason: "save_error",
             code: "save_failed",
           },
           500
@@ -485,6 +538,7 @@ export async function POST(request: NextRequest) {
         fetchedCount: 0,
         savedCount: 0,
         creditConsumed: 0,
+        stopReason: stopReason ?? "prefecture_fully_scanned",
       });
     }
 
@@ -504,6 +558,7 @@ export async function POST(request: NextRequest) {
           savedCount,
           resultCount: savedCount,
           creditConsumed: actualCreditCost,
+          stopReason: "credit_shortage",
           code: "insufficient_credit",
         },
         402
@@ -544,6 +599,7 @@ export async function POST(request: NextRequest) {
             savedCount,
             resultCount: savedCount,
             creditConsumed: actualCreditCost,
+            stopReason: "credit_shortage",
             code: "insufficient_credit",
           },
           402
@@ -565,6 +621,7 @@ export async function POST(request: NextRequest) {
           savedCount,
           resultCount: savedCount,
           creditConsumed: actualCreditCost,
+          stopReason: "credit_shortage",
           code: "consume_failed",
         },
         500
@@ -627,6 +684,7 @@ export async function POST(request: NextRequest) {
       savedCount,
       resultCount: savedCount,
       creditConsumed: actualCreditCost,
+      stopReason: stopReason ?? "reached_target",
       saveWarning: saveWarnings.length > 0 ? saveWarnings.join(" ") : null,
     });
   } catch (err) {
@@ -641,6 +699,7 @@ export async function POST(request: NextRequest) {
         results: [],
         copyText: "",
         credit: currentCredit,
+        stopReason: "google_api_error",
         code: "api_error",
       },
       500

@@ -11,12 +11,6 @@ export const FIXED_SEARCH_RADIUS_M = 1000;
 /** スパイラル移動の1ステップ距離 */
 export const SPIRAL_STEP_KM = 1.5;
 
-/** 1回の fetchNextBatch で試すスパイラル地点数の上限 */
-const MAX_SPIRAL_STEPS_PER_BATCH = 12;
-
-/** 範囲外で連続して新規候補0の地点が続いたら探索完了 */
-const CONSECUTIVE_EMPTY_LOCATIONS_TO_EXHAUST = 8;
-
 /** 方角: 0=東, 1=北, 2=西, 3=南（北を0度とする方位角） */
 const DIRECTION_BEARINGS = [90, 0, 270, 180] as const;
 
@@ -49,7 +43,7 @@ function destinationPoint(
   };
 }
 
-function haversineKm(
+export function haversineKm(
   a: { lat: number; lng: number },
   b: { lat: number; lng: number }
 ): number {
@@ -71,6 +65,7 @@ export type SpiralSearcher = {
   ) => Promise<TextSearchPlace[]>;
   isExhausted: () => boolean;
   getPosition: () => SpiralSearchPosition;
+  getSpiralDistanceKm: () => number;
 };
 
 export function createSpiralSearcher(params: {
@@ -97,8 +92,8 @@ export function createSpiralSearcher(params: {
   let turnsCompleted = 0;
 
   let pointPageToken: string | undefined;
+  /** 中心からの最大距離を超えたときのみ true */
   let regionFullyScanned = false;
-  let consecutiveEmptyLocations = 0;
 
   function currentSearchPoint(): SearchPoint {
     return {
@@ -106,6 +101,14 @@ export function createSpiralSearcher(params: {
       lng: currentLng,
       radiusM: FIXED_SEARCH_RADIUS_M,
     };
+  }
+
+  function getSpiralDistanceKm(): number {
+    return haversineKm(center, { lat: currentLat, lng: currentLng });
+  }
+
+  function isBeyondExplorationRange(): boolean {
+    return getSpiralDistanceKm() > params.maxExplorationRadiusKm;
   }
 
   function getPosition(): SpiralSearchPosition {
@@ -119,13 +122,6 @@ export function createSpiralSearcher(params: {
       currentLegLength,
       currentLegProgress,
     };
-  }
-
-  function isBeyondExplorationRange(): boolean {
-    return (
-      haversineKm(center, { lat: currentLat, lng: currentLng }) >
-      params.maxExplorationRadiusKm
-    );
   }
 
   function advanceSpiralLocation(): void {
@@ -157,38 +153,17 @@ export function createSpiralSearcher(params: {
     runtimeExcluded: Set<string>
   ): Promise<TextSearchPlace[]> {
     const batch: TextSearchPlace[] = [];
-    let spiralStepsThisCall = 0;
 
     while (batch.length < maxCount && !regionFullyScanned) {
-      if (
-        isBeyondExplorationRange() &&
-        consecutiveEmptyLocations >= CONSECUTIVE_EMPTY_LOCATIONS_TO_EXHAUST
-      ) {
+      if (isBeyondExplorationRange()) {
         regionFullyScanned = true;
         break;
-      }
-
-      if (spiralStepsThisCall >= MAX_SPIRAL_STEPS_PER_BATCH && batch.length > 0) {
-        break;
-      }
-
-      if (
-        spiralStepsThisCall >= MAX_SPIRAL_STEPS_PER_BATCH &&
-        batch.length === 0
-      ) {
-        advanceSpiralLocation();
-        spiralStepsThisCall++;
-        if (isBeyondExplorationRange()) {
-          consecutiveEmptyLocations++;
-        }
-        continue;
       }
 
       const point = currentSearchPoint();
       const { places: pagePlaces, nextPageToken } =
         await searchPlacesAtPointPage(params.query, point, pointPageToken);
 
-      let addedAtThisPoint = 0;
       for (const place of pagePlaces) {
         const pid = place.placeId;
         if (
@@ -201,7 +176,6 @@ export function createSpiralSearcher(params: {
         }
         sessionSeen.add(pid);
         batch.push(place);
-        addedAtThisPoint++;
         if (batch.length >= maxCount) {
           break;
         }
@@ -219,23 +193,12 @@ export function createSpiralSearcher(params: {
       }
 
       pointPageToken = undefined;
-      spiralStepsThisCall++;
+      advanceSpiralLocation();
 
-      if (addedAtThisPoint === 0) {
-        consecutiveEmptyLocations++;
-      } else {
-        consecutiveEmptyLocations = 0;
-      }
-
-      if (
-        isBeyondExplorationRange() &&
-        consecutiveEmptyLocations >= CONSECUTIVE_EMPTY_LOCATIONS_TO_EXHAUST
-      ) {
+      if (isBeyondExplorationRange()) {
         regionFullyScanned = true;
         break;
       }
-
-      advanceSpiralLocation();
     }
 
     return batch.slice(0, maxCount);
@@ -245,5 +208,6 @@ export function createSpiralSearcher(params: {
     fetchNextBatch,
     isExhausted: () => regionFullyScanned,
     getPosition,
+    getSpiralDistanceKm,
   };
 }

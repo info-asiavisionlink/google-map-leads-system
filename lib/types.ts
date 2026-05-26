@@ -22,9 +22,18 @@ export type PlaceSearchResult = {
   photoNames: string;
 };
 
+export type SearchStopReason =
+  | "reached_target"
+  | "prefecture_fully_scanned"
+  | "timeout_near_limit"
+  | "google_api_error"
+  | "save_error"
+  | "credit_shortage";
+
 export type SearchApiResponse = {
   status: "success" | "no_results" | "error";
   message: string;
+  stopReason?: SearchStopReason;
   results: PlaceSearchResult[];
   copyText: string;
   credit?: number | null;
