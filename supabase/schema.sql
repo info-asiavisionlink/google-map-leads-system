@@ -79,6 +79,7 @@ create table if not exists search_progress (
   current_radius_km integer not null default 1,
   current_angle integer not null default 0,
   current_ring_index integer not null default 0,
+  current_leg_length integer not null default 1,
   total_saved_count integer not null default 0,
   is_exhausted boolean not null default false,
   updated_at timestamp with time zone not null default now(),
@@ -90,6 +91,12 @@ create table if not exists search_progress (
 create index if not exists idx_search_progress_user_id on search_progress (user_id);
 
 -- 既存テーブル向けマイグレーション（重複実行可）
+alter table search_progress add column if not exists current_leg_length integer not null default 1;
+comment on column search_progress.current_radius_km is 'スパイラル: current_step';
+comment on column search_progress.current_angle is 'スパイラル: current_direction (0=E,1=N,2=W,3=S)';
+comment on column search_progress.current_ring_index is 'スパイラル: current_leg_progress';
+comment on column search_progress.current_leg_length is 'スパイラル: current_leg_length';
+
 alter table search_results add column if not exists email text;
 alter table search_results add column if not exists international_phone_number text;
 alter table search_results add column if not exists business_status text;

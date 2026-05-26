@@ -51,23 +51,13 @@ export default function SearchPage() {
   const [status, setStatus] = useState<SearchApiResponse["status"] | null>(
     null
   );
-  const [lastFetchedCount, setLastFetchedCount] = useState<number | null>(null);
-  const [lastSavedCount, setLastSavedCount] = useState<number | null>(null);
-  const [lastDuplicateCount, setLastDuplicateCount] = useState<number | null>(
-    null
-  );
+  const [displayCount, setDisplayCount] = useState<number | null>(null);
   const [lastCreditConsumed, setLastCreditConsumed] = useState<number | null>(
     null
   );
   const [lastRemainingCredit, setLastRemainingCredit] = useState<number | null>(
     null
   );
-  const [lastCurrentLocation, setLastCurrentLocation] = useState<string | null>(
-    null
-  );
-  const [lastNextResumeLocation, setLastNextResumeLocation] = useState<
-    string | null
-  >(null);
 
   const displayCredit = authState?.credit ?? getActiveCredit() ?? null;
 
@@ -100,13 +90,9 @@ export default function SearchPage() {
     setStatus(null);
     setResults([]);
     setCopyText("");
-    setLastFetchedCount(null);
-    setLastSavedCount(null);
-    setLastDuplicateCount(null);
+    setDisplayCount(null);
     setLastCreditConsumed(null);
     setLastRemainingCredit(null);
-    setLastCurrentLocation(null);
-    setLastNextResumeLocation(null);
     setSaveWarning(null);
 
     const requestHeaders: HeadersInit = {
@@ -181,28 +167,22 @@ export default function SearchPage() {
       setStatus(data.status);
       setMessage(data.message);
 
+      const count =
+        data.savedCount ?? data.fetchedCount ?? data.results.length ?? 0;
+      setDisplayCount(count);
+      setLastCreditConsumed(data.creditConsumed ?? 0);
+      if (data.credit != null) setLastRemainingCredit(data.credit);
+
       if (data.status === "no_results") {
         setSearchError(null);
-        setLastFetchedCount(data.fetchedCount ?? 0);
-        setLastSavedCount(data.savedCount ?? 0);
-        setLastDuplicateCount(data.duplicateExclusionCount ?? 0);
-        setLastCreditConsumed(data.creditConsumed ?? 0);
-        setLastCurrentLocation(data.currentSearchLocation ?? null);
-        setLastNextResumeLocation(data.nextResumeLocation ?? null);
-        if (data.credit != null) setLastRemainingCredit(data.credit);
+        setResults([]);
+        setCopyText("");
         return;
       }
 
       if (data.status === "success") {
         setResults(data.results);
         setCopyText(data.copyText);
-        setLastFetchedCount(data.fetchedCount ?? null);
-        setLastSavedCount(data.savedCount ?? data.resultCount ?? data.results.length);
-        setLastDuplicateCount(data.duplicateExclusionCount ?? 0);
-        setLastCreditConsumed(data.creditConsumed ?? null);
-        setLastCurrentLocation(data.currentSearchLocation ?? null);
-        setLastNextResumeLocation(data.nextResumeLocation ?? null);
-        if (data.credit != null) setLastRemainingCredit(data.credit);
         setSaveWarning(data.saveWarning ?? null);
         setSearchError(null);
       }
@@ -284,7 +264,7 @@ export default function SearchPage() {
         </div>
       )}
 
-      {(status === "success" || status === "no_results") && message && (
+      {(status === "success" || status === "no_results") && (
         <div
           className={`mt-6 rounded-lg border px-4 py-4 text-sm ${
             status === "success"
@@ -292,56 +272,30 @@ export default function SearchPage() {
               : "border-amber-200 bg-amber-50 text-amber-900"
           }`}
         >
-          <p className="font-medium">{message || NO_RESULTS_FOUND_MESSAGE}</p>
-          {(lastFetchedCount != null || lastSavedCount != null) && (
-            <dl className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {lastFetchedCount != null && (
-                <div>
-                  <dt className="text-xs opacity-80">取得件数</dt>
-                  <dd className="font-semibold">{lastFetchedCount}件</dd>
-                </div>
-              )}
-              {lastSavedCount != null && (
-                <div>
-                  <dt className="text-xs opacity-80">新規保存件数</dt>
-                  <dd className="font-semibold">{lastSavedCount}件</dd>
-                </div>
-              )}
-              {lastDuplicateCount != null && (
-                <div>
-                  <dt className="text-xs opacity-80">重複除外件数</dt>
-                  <dd className="font-semibold">{lastDuplicateCount}件</dd>
-                </div>
-              )}
-              {lastCreditConsumed != null && (
-                <div>
-                  <dt className="text-xs opacity-80">消費クレジット</dt>
-                  <dd className="font-semibold">
-                    {formatCredit(lastCreditConsumed)}
-                  </dd>
-                </div>
-              )}
-              {lastRemainingCredit != null && (
-                <div>
-                  <dt className="text-xs opacity-80">残クレジット</dt>
-                  <dd className="font-semibold">
-                    {formatCredit(lastRemainingCredit)}
-                  </dd>
-                </div>
-              )}
-              {lastCurrentLocation && (
-                <div className="sm:col-span-2 lg:col-span-3">
-                  <dt className="text-xs opacity-80">現在検索地点</dt>
-                  <dd className="font-semibold break-all">{lastCurrentLocation}</dd>
-                </div>
-              )}
-              {lastNextResumeLocation && (
-                <div className="sm:col-span-2 lg:col-span-3">
-                  <dt className="text-xs opacity-80">次回再開地点</dt>
-                  <dd className="font-semibold break-all">{lastNextResumeLocation}</dd>
-                </div>
-              )}
-            </dl>
+          <dl className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <dt className="text-xs opacity-80">取得件数</dt>
+              <dd className="text-lg font-semibold">{displayCount ?? 0}件</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-80">消費クレジット</dt>
+              <dd className="text-lg font-semibold">
+                {formatCredit(lastCreditConsumed ?? 0)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-80">残クレジット</dt>
+              <dd className="text-lg font-semibold">
+                {lastRemainingCredit != null
+                  ? formatCredit(lastRemainingCredit)
+                  : "—"}
+              </dd>
+            </div>
+          </dl>
+          {message && status === "no_results" && (
+            <p className="mt-3 text-sm opacity-90">
+              {message || NO_RESULTS_FOUND_MESSAGE}
+            </p>
           )}
         </div>
       )}

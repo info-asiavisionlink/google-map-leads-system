@@ -27,7 +27,6 @@ import {
 } from "@/lib/googleMaps";
 import { getMaxSearchRadiusKm } from "@/lib/prefectureSearchRadius";
 import { PREFECTURES } from "@/lib/prefectures";
-import { createProgressRingSearcher } from "@/lib/progressRingSearch";
 import {
   extractSearchUserId,
   resolveSearchAuthContext,
@@ -35,9 +34,13 @@ import {
 } from "@/lib/searchAuth";
 import {
   loadSearchProgressRecord,
-  progressRowToPosition,
+  progressRowToSpiralPosition,
   upsertSearchProgress,
 } from "@/lib/searchProgress";
+import {
+  createSpiralSearcher,
+  FIXED_SEARCH_RADIUS_M,
+} from "@/lib/spiralSearch";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import {
   completeSearchRequest,
@@ -122,33 +125,23 @@ async function markSearchRequestFailed(
 }
 
 function logSearchLoop(meta: {
-  fetched: number;
   saved: number;
-  duplicates: number;
   total_saved: number;
-  radius_km: number;
+  step: number;
 }): void {
   if (process.env.NODE_ENV === "production") return;
   console.log("[search-loop]", meta);
 }
 
 function buildSuccessMessage(params: {
-  fetchedCount: number;
   savedCount: number;
-  duplicateExclusionCount: number;
   creditConsumed: number;
   creditAfter: number;
-  currentSearchLocation: string;
-  nextResumeLocation: string;
 }): string {
   return [
-    `取得件数: ${params.fetchedCount}件`,
-    `新規保存: ${params.savedCount}件`,
-    `重複除外: ${params.duplicateExclusionCount}件`,
+    `取得件数: ${params.savedCount}件`,
     `消費クレジット: ${params.creditConsumed}`,
     `残クレジット: ${params.creditAfter.toLocaleString("ja-JP")}`,
-    `現在検索地点: ${params.currentSearchLocation}`,
-    `次回再開地点: ${params.nextResumeLocation}`,
   ].join(" / ");
 }
 
@@ -248,7 +241,7 @@ export async function POST(request: NextRequest) {
   try {
     const center = await geocodePrefecture(prefecture);
     const maxRadiusKm = getMaxSearchRadiusKm(prefecture);
-    const startPosition = progressRowToPosition(progressRecord, center);
+    const startPosition = progressRowToSpiralPosition(progressRecord, center);
 
     const { data: pendingRequest, error: pendingError } = await supabase
       .from("search_requests")
@@ -257,7 +250,7 @@ export async function POST(request: NextRequest) {
         area: prefecture,
         keyword1,
         keyword2,
-        radius_m: startPosition.currentRadiusKm * 1000,
+        radius_m: FIXED_SEARCH_RADIUS_M,
         latitude: startPosition.lastLatitude,
         longitude: startPosition.lastLongitude,
         status: "pending",
@@ -289,10 +282,10 @@ export async function POST(request: NextRequest) {
       ...previouslySavedPlaceIds,
     ]);
 
-    const searcher = createProgressRingSearcher({
+    const searcher = createSpiralSearcher({
       query,
       center,
-      maxRadiusKm,
+      maxExplorationRadiusKm: maxRadiusKm,
       startPosition,
       excludedPlaceIds: searchExcludedPlaceIds,
     });
@@ -301,9 +294,7 @@ export async function POST(request: NextRequest) {
     const seenPlaceIds = new Set<string>();
     let activeProgressId = progressRecord?.id;
     const lifetimeSavedBaseline = progressRecord?.total_saved_count ?? 0;
-    let fetchedCount = 0;
     let duplicateExclusionCount = 0;
-    let saveFailedCount = 0;
     let saveFailed = false;
 
     function buildRuntimeExcluded(): Set<string> {
@@ -354,18 +345,13 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      fetchedCount += batchCandidates.length;
-
       const newPlaces = filterNewPlaces(batchCandidates);
-      const batchDuplicates = batchCandidates.length - newPlaces.length;
 
       if (newPlaces.length === 0) {
         logSearchLoop({
-          fetched: batchCandidates.length,
           saved: 0,
-          duplicates: batchDuplicates,
           total_saved: savedResults.length,
-          radius_km: searcher.getPosition().currentRadiusKm,
+          step: searcher.getPosition().currentStep,
         });
         if (searcher.isExhausted()) {
           break;
@@ -388,7 +374,6 @@ export async function POST(request: NextRequest) {
       const insertOutcome = await insertSearchResultsBatch(supabase, resultRows);
 
       if (!insertOutcome.ok) {
-        saveFailedCount += resultRows.length;
         saveFailed = true;
         logSearchResultsSaveFailure(insertOutcome.error, {
           attemptedCount: resultRows.length,
@@ -429,11 +414,9 @@ export async function POST(request: NextRequest) {
       }
 
       logSearchLoop({
-        fetched: batchCandidates.length,
         saved: resultRows.length,
-        duplicates: batchDuplicates,
         total_saved: savedResults.length,
-        radius_km: positionAfterSave.currentRadiusKm,
+        step: positionAfterSave.currentStep,
       });
 
       if (savedResults.length >= TARGET_RESULTS) {
@@ -442,12 +425,8 @@ export async function POST(request: NextRequest) {
     }
 
     const finalPosition = searcher.getPosition();
-    const currentSearchLocation = searcher.getCurrentSearchLocationLabel();
-    const nextResumeLocation = searcher.getNextResumeLocationLabel();
     const isRegionExhausted =
-      savedResults.length === 0 &&
-      (searcher.isExhausted() ||
-        finalPosition.currentRadiusKm > maxRadiusKm);
+      savedResults.length === 0 && searcher.isExhausted();
 
     await upsertSearchProgress(supabase, {
       userId,
@@ -461,9 +440,9 @@ export async function POST(request: NextRequest) {
     });
 
     const requestMeta = {
-      latitude: finalPosition.lastLatitude ?? center.lat,
-      longitude: finalPosition.lastLongitude ?? center.lng,
-      radiusM: finalPosition.currentRadiusKm * 1000,
+      latitude: finalPosition.lastLatitude,
+      longitude: finalPosition.lastLongitude,
+      radiusM: FIXED_SEARCH_RADIUS_M,
     };
 
     if (savedResults.length === 0) {
@@ -488,12 +467,9 @@ export async function POST(request: NextRequest) {
             results: [],
             copyText: "",
             credit: currentCredit,
-            fetchedCount,
+            fetchedCount: 0,
             savedCount: 0,
-            saveFailedCount,
-            duplicateExclusionCount,
-            currentSearchLocation,
-            nextResumeLocation,
+            creditConsumed: 0,
             code: "save_failed",
           },
           500
@@ -506,13 +482,9 @@ export async function POST(request: NextRequest) {
         results: [],
         copyText: "",
         credit: currentCredit,
-        fetchedCount,
+        fetchedCount: 0,
         savedCount: 0,
-        saveFailedCount: 0,
-        duplicateExclusionCount,
         creditConsumed: 0,
-        currentSearchLocation,
-        nextResumeLocation,
       });
     }
 
@@ -528,13 +500,10 @@ export async function POST(request: NextRequest) {
           results: savedResults,
           copyText: buildTsv(savedResults),
           credit: currentCredit,
-          fetchedCount,
+          fetchedCount: savedCount,
           savedCount,
-          saveFailedCount,
-          duplicateExclusionCount,
           resultCount: savedCount,
-          currentSearchLocation,
-          nextResumeLocation,
+          creditConsumed: actualCreditCost,
           code: "insufficient_credit",
         },
         402
@@ -571,13 +540,10 @@ export async function POST(request: NextRequest) {
             results: savedResults,
             copyText: buildTsv(savedResults),
             credit: currentCredit,
-            fetchedCount,
+            fetchedCount: savedCount,
             savedCount,
-            saveFailedCount,
-            duplicateExclusionCount,
             resultCount: savedCount,
-            currentSearchLocation,
-            nextResumeLocation,
+            creditConsumed: actualCreditCost,
             code: "insufficient_credit",
           },
           402
@@ -595,13 +561,10 @@ export async function POST(request: NextRequest) {
           results: savedResults,
           copyText: buildTsv(savedResults),
           credit: currentCredit,
-          fetchedCount,
+          fetchedCount: savedCount,
           savedCount,
-          saveFailedCount,
-          duplicateExclusionCount,
           resultCount: savedCount,
-          currentSearchLocation,
-          nextResumeLocation,
+          creditConsumed: actualCreditCost,
           code: "consume_failed",
         },
         500
@@ -647,13 +610,9 @@ export async function POST(request: NextRequest) {
     }
 
     const message = buildSuccessMessage({
-      fetchedCount,
       savedCount,
-      duplicateExclusionCount,
       creditConsumed: actualCreditCost,
       creditAfter,
-      currentSearchLocation,
-      nextResumeLocation,
     });
 
     return jsonResponse({
@@ -664,14 +623,10 @@ export async function POST(request: NextRequest) {
       credit: creditAfter,
       creditBefore: creditBeforeConsume,
       creditAfter,
-      fetchedCount,
+      fetchedCount: savedCount,
       savedCount,
-      saveFailedCount,
-      duplicateExclusionCount,
       resultCount: savedCount,
       creditConsumed: actualCreditCost,
-      currentSearchLocation,
-      nextResumeLocation,
       saveWarning: saveWarnings.length > 0 ? saveWarnings.join(" ") : null,
     });
   } catch (err) {
