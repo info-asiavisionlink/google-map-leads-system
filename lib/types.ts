@@ -32,6 +32,8 @@ export type SearchApiResponse = {
   creditConsumed?: number;
   creditBefore?: number;
   creditAfter?: number;
+  /** DB保存に失敗した場合の警告（検索結果は results に含まれる） */
+  saveWarning?: string | null;
   code?:
     | "unauthorized"
     | "insufficient_credit"

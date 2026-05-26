@@ -22,7 +22,6 @@ import {
   INSUFFICIENT_CREDIT_MESSAGE,
   MIN_CREDIT_TO_SEARCH,
   NO_RESULTS_FOUND_MESSAGE,
-  SAVE_RESULTS_FAILED_MESSAGE,
   USER_INFO_MISSING_MESSAGE,
 } from "@/lib/constants";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
@@ -48,6 +47,7 @@ export default function SearchPage() {
   const [copyText, setCopyText] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [saveWarning, setSaveWarning] = useState<string | null>(null);
   const [status, setStatus] = useState<SearchApiResponse["status"] | null>(
     null
   );
@@ -63,6 +63,7 @@ export default function SearchPage() {
 
   async function handleSearch(values: SearchFormValues) {
     setSearchError(null);
+    setSaveWarning(null);
 
     const userId = authState?.userId?.trim() || getActiveUserId();
     const creditBalance = authState?.credit ?? getActiveCredit();
@@ -92,6 +93,7 @@ export default function SearchPage() {
     setLastResultCount(null);
     setLastCreditConsumed(null);
     setLastRemainingCredit(null);
+    setSaveWarning(null);
 
     const requestHeaders: HeadersInit = {
       "Content-Type": "application/json",
@@ -155,13 +157,6 @@ export default function SearchPage() {
         return;
       }
 
-      if (data.code === "save_failed") {
-        setSearchError(data.message || SAVE_RESULTS_FAILED_MESSAGE);
-        setResults([]);
-        setCopyText("");
-        return;
-      }
-
       if (data.status === "error" || !res.ok) {
         const rawMessage =
           data.code === "api_error" ? API_ERROR_MESSAGE : data.message;
@@ -186,6 +181,8 @@ export default function SearchPage() {
         setLastResultCount(data.resultCount ?? data.results.length);
         setLastCreditConsumed(data.creditConsumed ?? null);
         if (data.credit != null) setLastRemainingCredit(data.credit);
+        setSaveWarning(data.saveWarning ?? null);
+        setSearchError(null);
       }
     } catch {
       setSearchError(API_ERROR_MESSAGE);
@@ -259,6 +256,15 @@ export default function SearchPage() {
       {status === "no_results" && !searchError && (
         <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           {message || NO_RESULTS_FOUND_MESSAGE}
+        </div>
+      )}
+
+      {saveWarning && (
+        <div
+          role="status"
+          className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          {saveWarning}（画面の検索結果とコピーはご利用いただけます）
         </div>
       )}
 

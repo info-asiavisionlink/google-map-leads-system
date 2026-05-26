@@ -31,6 +31,12 @@ import {
   type SearchAuthBody,
 } from "@/lib/searchAuth";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import {
+  completeSearchRequest,
+  insertSearchResultsInChunks,
+  logSupabasePersistenceError,
+  placeSearchResultToRow,
+} from "@/lib/searchPersistence";
 import { buildTsv } from "@/lib/tsv";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
 
@@ -185,7 +191,12 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (pendingError || !pendingRequest) {
-      console.error("search_requests pending 作成エラー:", pendingError);
+      console.error("search_requests insert error:", {
+        code: pendingError?.code,
+        message: pendingError?.message,
+        details: pendingError?.details,
+        hint: pendingError?.hint,
+      });
       throw new Error("検索履歴の作成に失敗しました");
     }
 
@@ -301,93 +312,56 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const resultRows = results.map((r) => ({
-      search_request_id: searchRequestId,
-      user_id: userId,
-      place_id: r.placeId,
-      name: r.name,
-      address: r.address,
-      rating: r.rating,
-      review_count: r.reviewCount,
-      opening_hours: r.regularOpeningHours,
-      phone_number: r.phoneNumber,
-      website_url: r.websiteUrl,
-      google_maps_url: r.googleMapsUrl,
-      latitude: r.latitude,
-      longitude: r.longitude,
-      email: r.email,
-      international_phone_number: r.internationalPhoneNumber,
-      business_status: r.businessStatus,
-      category: r.category,
-      primary_type: r.primaryType,
-      closed_days: r.closedDays,
-      reviews_text: r.reviewsText,
-      editorial_summary: r.editorialSummary,
-      price_level: r.priceLevel,
-      photo_names: r.photoNames,
-    }));
+    const requestId = searchRequestId as string;
+    const copyText = buildTsv(results);
+    const saveWarnings: string[] = [];
 
-    const { error: resultsInsertError } = await supabase
-      .from("search_results")
-      .insert(resultRows);
+    const resultRows = results
+      .map((r) => placeSearchResultToRow(r, requestId, userId))
+      .filter((row): row is NonNullable<typeof row> => row !== null);
 
-    if (resultsInsertError) {
-      console.error("search_results 保存エラー:", resultsInsertError);
-      await markSearchRequestFailed(searchRequestId, results.length);
-      return jsonResponse(
-        {
-          status: "error",
-          message: SAVE_RESULTS_FAILED_MESSAGE,
-          results: [],
-          copyText: "",
-          credit: creditAfter,
-          code: "save_failed",
-        },
-        500
+    if (resultRows.length < results.length) {
+      console.warn(
+        "[search-persistence] place_id が無い店舗をスキップ:",
+        results.length - resultRows.length
       );
     }
 
-    const excludedRows = newPlaceIds.map((placeId) => ({
-      user_id: userId,
-      place_id: placeId,
-      first_seen_search_request_id: searchRequestId,
-    }));
+    const insertOutcome = await insertSearchResultsInChunks(supabase, resultRows);
 
-    const { error: excludedError } = await supabase
-      .from("excluded_places")
-      .upsert(excludedRows, { onConflict: "user_id,place_id" });
+    if (!insertOutcome.ok) {
+      await markSearchRequestFailed(requestId, results.length);
+      saveWarnings.push(SAVE_RESULTS_FAILED_MESSAGE);
+    } else {
+      const excludedRows = newPlaceIds.map((placeId) => ({
+        user_id: userId,
+        place_id: placeId,
+        first_seen_search_request_id: requestId,
+      }));
 
-    if (excludedError) {
-      console.error("excluded_places 保存エラー:", excludedError);
-      await markSearchRequestFailed(searchRequestId, results.length);
-      return jsonResponse(
-        {
-          status: "error",
-          message: SAVE_RESULTS_FAILED_MESSAGE,
-          results: [],
-          copyText: "",
-          credit: creditAfter,
-          code: "save_failed",
-        },
-        500
-      );
-    }
+      const { error: excludedError } = await supabase
+        .from("excluded_places")
+        .upsert(excludedRows, { onConflict: "user_id,place_id" });
 
-    const { error: completeError } = await supabase
-      .from("search_requests")
-      .update({
-        status: "completed",
-        result_count: results.length,
+      if (excludedError) {
+        logSupabasePersistenceError(
+          "excluded_places upsert error",
+          excludedError,
+          { rowCount: excludedRows.length, sampleRow: excludedRows[0] }
+        );
+      }
+
+      const completeError = await completeSearchRequest(supabase, requestId, {
+        resultCount: results.length,
         latitude: center.lat,
         longitude: center.lng,
-      })
-      .eq("id", searchRequestId);
+      });
 
-    if (completeError) {
-      console.error("search_requests 完了更新エラー:", completeError);
+      if (completeError) {
+        saveWarnings.push("検索履歴の更新に失敗しました。");
+      }
     }
 
-    const copyText = buildTsv(results);
     const message = `取得件数：${results.length}件 / 消費クレジット：${actualCreditCost} / 残りクレジット：${creditAfter.toLocaleString("ja-JP")}`;
 
     return jsonResponse({
@@ -400,6 +374,7 @@ export async function POST(request: NextRequest) {
       creditAfter,
       resultCount: results.length,
       creditConsumed: actualCreditCost,
+      saveWarning: saveWarnings.length > 0 ? saveWarnings.join(" ") : null,
     });
   } catch (err) {
     console.error("POST /api/places/search エラー:", err);
