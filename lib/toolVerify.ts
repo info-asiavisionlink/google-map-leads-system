@@ -82,9 +82,12 @@ export function parseToolVerifyResponse(data: unknown): ToolVerifyResult {
     null;
 
   const credit =
+    pickNumber(payload.remaining_credit) ??
+    pickNumber(root.remaining_credit) ??
     pickNumber(payload.credit) ??
     pickNumber(root.credit) ??
     pickNumber(profileRaw?.credit) ??
+    pickNumber(profileRaw?.remaining_credit) ??
     pickNumber(payload.credit_balance) ??
     pickNumber(root.balance);
 

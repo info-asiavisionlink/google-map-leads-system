@@ -15,6 +15,7 @@ import {
   clearStoredAccessToken,
   resolveAccessToken,
 } from "@/lib/toolToken";
+import { clearToolUserSession } from "@/lib/toolUserSession";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
 import { useToolAuth } from "@/lib/useToolAuth";
 import { useState } from "react";
@@ -38,11 +39,12 @@ export default function SearchPage() {
     status: authStatus,
     accessToken,
     verify,
+    userSession,
     authError,
     creditCost,
     canSearch,
     refreshVerify,
-    setVerify,
+    patchRemainingCredit,
   } = useToolAuth();
 
   const [isLoading, setIsLoading] = useState(false);
@@ -92,20 +94,21 @@ export default function SearchPage() {
       setStatus(data.status);
       setMessage(data.message);
 
-      if (data.credit !== undefined && data.credit !== null && verify) {
-        setVerify({ ...verify, credit: data.credit });
+      if (data.credit !== undefined && data.credit !== null) {
+        patchRemainingCredit(data.credit);
       }
 
       if (res.status === 401 || data.code === "unauthorized") {
         clearStoredAccessToken();
+        clearToolUserSession();
         setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
         return;
       }
 
       if (res.status === 402 || data.code === "insufficient_credit") {
         setSearchError(data.message || INSUFFICIENT_CREDIT_MESSAGE);
-        if (data.credit !== undefined && data.credit !== null && verify) {
-          setVerify({ ...verify, credit: data.credit });
+        if (data.credit !== undefined && data.credit !== null) {
+          patchRemainingCredit(data.credit);
         }
         return;
       }
@@ -134,8 +137,7 @@ export default function SearchPage() {
       if (data.status === "no_results") {
         setSearchError(null);
       }
-    } catch (err) {
-      console.error("検索リクエストエラー:", err);
+    } catch {
       setSearchError(API_ERROR_MESSAGE);
       setStatus("error");
     } finally {
@@ -146,7 +148,11 @@ export default function SearchPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:py-10">
       <div className="mb-4">
-        <ToolAuthBar verify={verify} isLoading={isAuthLoading} />
+        <ToolAuthBar
+          verify={verify}
+          userSession={userSession}
+          isLoading={isAuthLoading}
+        />
       </div>
 
       <header className="mb-8 rounded-2xl border border-blue-100 bg-white p-6 shadow-sm sm:p-8">

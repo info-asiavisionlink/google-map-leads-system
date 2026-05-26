@@ -49,19 +49,15 @@ export function resolveAccessToken(): string | null {
   if (typeof window === "undefined") return null;
 
   const fromUrl = readTokenFromUrl();
-  console.log("TOKEN_FROM_URL", fromUrl);
 
   if (fromUrl) {
     sessionStorage.setItem(TOOL_ACCESS_TOKEN_KEY, fromUrl);
     const cleanedUrl = buildCleanUrl();
     window.history.replaceState({}, "", cleanedUrl);
-    console.log("TOKEN_FROM_STORAGE", fromUrl);
     return fromUrl;
   }
 
-  const stored = sessionStorage.getItem(TOOL_ACCESS_TOKEN_KEY);
-  console.log("TOKEN_FROM_STORAGE", stored);
-  return stored;
+  return sessionStorage.getItem(TOOL_ACCESS_TOKEN_KEY);
 }
 
 /** @deprecated resolveAccessToken を使用 */

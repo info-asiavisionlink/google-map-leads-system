@@ -13,6 +13,12 @@ export type RadiusM = (typeof RADIUS_OPTIONS)[number];
 export const TOKEN_AUTH_EXPIRED_MESSAGE =
   "認証が切れています。ダッシュボードから再度ツールを開いてください。";
 
+export const LOGIN_ERROR_MESSAGE =
+  "ログインに失敗しました。ダッシュボードから再度ツールを開いてください。";
+
+export const CREDIT_FETCH_FAILED_MESSAGE =
+  "クレジット情報の取得に失敗しました。ダッシュボードから再度ツールを開くか、しばらくしてからお試しください。";
+
 /** @deprecated トークン認証では TOKEN_AUTH_EXPIRED_MESSAGE を使用 */
 export const AUTH_REQUIRED_MESSAGE = TOKEN_AUTH_EXPIRED_MESSAGE;
 
