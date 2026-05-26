@@ -262,7 +262,7 @@ export default function SearchPage() {
       {isLoading && (
         <div className="mt-6 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
           <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-          店舗情報を取得しています。しばらくお待ちください…
+          店舗情報を取得・保存しています（最大200件）。完了までしばらくお待ちください…
         </div>
       )}
 

@@ -1,5 +1,4 @@
 import {
-  searchPlacesAtPoint,
   searchPlacesAtPointPage,
   type SearchPoint,
   type TextSearchPlace,
@@ -7,6 +6,9 @@ import {
 import type { SearchProgressPosition } from "@/lib/searchProgress";
 
 const POINTS_PER_RING = 8;
+
+/** 1回の fetchNextBatch で進める検索地点の上限（全域走査による早期 exhausted を防ぐ） */
+const MAX_POINT_STEPS_PER_BATCH = 12;
 
 function destinationPoint(
   lat: number,
@@ -73,7 +75,8 @@ export function createProgressRingSearcher(params: {
   let currentRadiusKm = Math.max(1, params.startPosition.currentRadiusKm);
   let currentAngle = params.startPosition.currentAngle % POINTS_PER_RING;
   let pointPageToken: string | undefined;
-  let exhausted = false;
+  /** 都道府県全域の走査が完了したときのみ true（50件取得で true にしない） */
+  let regionFullyScanned = false;
   let lastSearchPoint: SearchPoint | null = null;
 
   const center = {
@@ -82,7 +85,8 @@ export function createProgressRingSearcher(params: {
   };
 
   function getPosition(): SearchProgressPosition {
-    const point = lastSearchPoint ?? ringPointAt(center, currentRadiusKm, currentAngle);
+    const point =
+      lastSearchPoint ?? ringPointAt(center, currentRadiusKm, currentAngle);
     return {
       lastLatitude: point.lat,
       lastLongitude: point.lng,
@@ -94,7 +98,8 @@ export function createProgressRingSearcher(params: {
     };
   }
 
-  function advanceToNextPoint(): void {
+  /** @returns false = これ以上地点がない */
+  function advanceToNextPoint(): boolean {
     pointPageToken = undefined;
     currentAngle++;
     if (currentAngle >= POINTS_PER_RING) {
@@ -102,8 +107,9 @@ export function createProgressRingSearcher(params: {
       currentRadiusKm++;
     }
     if (currentRadiusKm > params.maxRadiusKm) {
-      exhausted = true;
+      return false;
     }
+    return true;
   }
 
   async function fetchNextBatch(
@@ -111,57 +117,34 @@ export function createProgressRingSearcher(params: {
     runtimeExcluded: Set<string>
   ): Promise<TextSearchPlace[]> {
     const batch: TextSearchPlace[] = [];
+    let pointSteps = 0;
 
-    while (batch.length < maxCount && !exhausted) {
+    while (batch.length < maxCount && !regionFullyScanned) {
       if (currentRadiusKm > params.maxRadiusKm) {
-        exhausted = true;
+        regionFullyScanned = true;
         break;
+      }
+
+      if (pointSteps >= MAX_POINT_STEPS_PER_BATCH && batch.length > 0) {
+        break;
+      }
+
+      if (pointSteps >= MAX_POINT_STEPS_PER_BATCH && batch.length === 0) {
+        if (!advanceToNextPoint()) {
+          regionFullyScanned = true;
+        }
+        pointSteps = 0;
+        continue;
       }
 
       const point = ringPointAt(center, currentRadiusKm, currentAngle);
       lastSearchPoint = point;
+      pointSteps++;
 
-      if (pointPageToken) {
-        const { places: pagePlaces, nextPageToken } =
-          await searchPlacesAtPointPage(params.query, point, pointPageToken);
+      const { places: pagePlaces, nextPageToken } =
+        await searchPlacesAtPointPage(params.query, point, pointPageToken);
 
-        for (const place of pagePlaces) {
-          const pid = place.placeId;
-          if (
-            !pid ||
-            sessionSeen.has(pid) ||
-            params.excludedPlaceIds.has(pid) ||
-            runtimeExcluded.has(pid)
-          ) {
-            continue;
-          }
-          sessionSeen.add(pid);
-          batch.push(place);
-          if (batch.length >= maxCount) break;
-        }
-
-        if (batch.length >= maxCount) {
-          pointPageToken = nextPageToken;
-          break;
-        }
-
-        if (nextPageToken) {
-          pointPageToken = nextPageToken;
-          await new Promise((r) => setTimeout(r, 300));
-          continue;
-        }
-
-        advanceToNextPoint();
-        continue;
-      }
-
-      const places = await searchPlacesAtPoint(
-        params.query,
-        point,
-        Math.min(60, maxCount - batch.length + 10)
-      );
-
-      for (const place of places) {
+      for (const place of pagePlaces) {
         const pid = place.placeId;
         if (
           !pid ||
@@ -173,14 +156,27 @@ export function createProgressRingSearcher(params: {
         }
         sessionSeen.add(pid);
         batch.push(place);
-        if (batch.length >= maxCount) break;
+        if (batch.length >= maxCount) {
+          break;
+        }
       }
 
       if (batch.length >= maxCount) {
+        pointPageToken = nextPageToken;
         break;
       }
 
-      advanceToNextPoint();
+      if (nextPageToken) {
+        pointPageToken = nextPageToken;
+        await new Promise((r) => setTimeout(r, 300));
+        continue;
+      }
+
+      pointPageToken = undefined;
+      if (!advanceToNextPoint()) {
+        regionFullyScanned = true;
+        break;
+      }
     }
 
     return batch.slice(0, maxCount);
@@ -188,10 +184,11 @@ export function createProgressRingSearcher(params: {
 
   return {
     fetchNextBatch,
-    isExhausted: () => exhausted,
+    isExhausted: () => regionFullyScanned,
     getPosition,
     getCurrentSearchLocationLabel: () => {
-      const p = lastSearchPoint ?? ringPointAt(center, currentRadiusKm, currentAngle);
+      const p =
+        lastSearchPoint ?? ringPointAt(center, currentRadiusKm, currentAngle);
       return `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}（半径${currentRadiusKm}km・地点${currentAngle + 1}/8）`;
     },
     getNextResumeLocationLabel: () => {

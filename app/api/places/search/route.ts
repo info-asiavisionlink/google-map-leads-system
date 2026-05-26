@@ -23,6 +23,7 @@ import {
   geocodePrefecture,
   getPlaceDetails,
   toPlaceSearchResult,
+  type TextSearchPlace,
 } from "@/lib/googleMaps";
 import { getMaxSearchRadiusKm } from "@/lib/prefectureSearchRadius";
 import { PREFECTURES } from "@/lib/prefectures";
@@ -48,6 +49,14 @@ import {
 } from "@/lib/searchPersistence";
 import { buildTsv } from "@/lib/tsv";
 import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
+
+/** 1回の検索ボタンで目指す新規保存件数 */
+const TARGET_RESULTS = MAX_RESULTS;
+/** 内部バッチサイズ（レスポンスはループ完了後にまとめて返す） */
+const BATCH_SIZE = SEARCH_BATCH_SIZE;
+
+/** 長時間の検索ループ用（デプロイ環境の上限に合わせて調整） */
+export const maxDuration = 300;
 
 type SearchBody = SearchAuthBody & {
   area?: string;
@@ -313,9 +322,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    while (savedResults.length < MAX_RESULTS) {
+    function filterNewPlaces(batch: TextSearchPlace[]): TextSearchPlace[] {
+      const unique: TextSearchPlace[] = [];
+      for (const place of batch) {
+        const placeId = place.placeId;
+        if (!placeId) continue;
+
+        if (isDuplicatePlaceId(placeId)) {
+          duplicateExclusionCount++;
+          seenPlaceIds.add(placeId);
+          continue;
+        }
+
+        seenPlaceIds.add(placeId);
+        unique.push(place);
+      }
+      return unique;
+    }
+
+    // 50件ずつ取得・保存し、新規200件（または終了条件）まで続けてから1回だけレスポンス
+    while (savedResults.length < TARGET_RESULTS) {
       const batchCandidates = await searcher.fetchNextBatch(
-        SEARCH_BATCH_SIZE,
+        BATCH_SIZE,
         buildRuntimeExcluded()
       );
 
@@ -328,25 +356,10 @@ export async function POST(request: NextRequest) {
 
       fetchedCount += batchCandidates.length;
 
-      const toSaveCandidates: typeof batchCandidates = [];
-      let batchDuplicates = 0;
+      const newPlaces = filterNewPlaces(batchCandidates);
+      const batchDuplicates = batchCandidates.length - newPlaces.length;
 
-      for (const place of batchCandidates) {
-        const placeId = place.placeId;
-        if (!placeId) continue;
-
-        if (isDuplicatePlaceId(placeId)) {
-          batchDuplicates++;
-          duplicateExclusionCount++;
-          seenPlaceIds.add(placeId);
-          continue;
-        }
-
-        seenPlaceIds.add(placeId);
-        toSaveCandidates.push(place);
-      }
-
-      if (toSaveCandidates.length === 0) {
+      if (newPlaces.length === 0) {
         logSearchLoop({
           fetched: batchCandidates.length,
           saved: 0,
@@ -360,8 +373,8 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      const remainingSlots = MAX_RESULTS - savedResults.length;
-      const candidatesToProcess = toSaveCandidates.slice(0, remainingSlots);
+      const remainingSlots = TARGET_RESULTS - savedResults.length;
+      const candidatesToProcess = newPlaces.slice(0, remainingSlots);
 
       const detailsList = await Promise.all(
         candidatesToProcess.map((place) => getPlaceDetails(place.placeId))
@@ -423,11 +436,7 @@ export async function POST(request: NextRequest) {
         radius_km: positionAfterSave.currentRadiusKm,
       });
 
-      if (savedResults.length >= MAX_RESULTS) {
-        break;
-      }
-
-      if (searcher.isExhausted()) {
+      if (savedResults.length >= TARGET_RESULTS) {
         break;
       }
     }
