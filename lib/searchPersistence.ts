@@ -115,14 +115,15 @@ export function logSupabasePersistenceError(
   });
 }
 
-export async function getSavedPlaceIdsForRequest(
+/** 同一 user_id が過去に保存した全 place_id（他ユーザーは含まない） */
+export async function getPreviouslySavedPlaceIdsForUser(
   supabase: SupabaseClient,
-  searchRequestId: string
+  userId: string
 ): Promise<Set<string>> {
   const { data, error } = await supabase
     .from("search_results")
     .select("place_id")
-    .eq("search_request_id", searchRequestId);
+    .eq("user_id", userId);
 
   if (error) {
     logSupabasePersistenceError("search_results place_id fetch error", error, {
@@ -131,7 +132,30 @@ export async function getSavedPlaceIdsForRequest(
     throw new Error("保存済み place_id の取得に失敗しました");
   }
 
-  return new Set((data ?? []).map((row) => row.place_id as string));
+  return new Set(
+    (data ?? [])
+      .map((row) => row.place_id as string)
+      .filter((id): id is string => Boolean(id))
+  );
+}
+
+export function logSearchResultsSaveFailure(
+  error: PostgrestError,
+  meta: {
+    attemptedCount: number;
+    sampleRow: unknown;
+    duplicateExclusionCount: number;
+    previouslySavedPlaceIdCount: number;
+  }
+): void {
+  console.error("[search-persistence] search_results save failed", {
+    code: error.code,
+    message: error.message,
+    attemptedCount: meta.attemptedCount,
+    sampleRow: meta.sampleRow,
+    duplicateExclusionCount: meta.duplicateExclusionCount,
+    previouslySavedPlaceIdCount: meta.previouslySavedPlaceIdCount,
+  });
 }
 
 export async function insertSearchResultsBatch(

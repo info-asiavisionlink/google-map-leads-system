@@ -34,8 +34,9 @@ import {
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import {
   completeSearchRequest,
-  getSavedPlaceIdsForRequest,
+  getPreviouslySavedPlaceIdsForUser,
   insertSearchResultsBatch,
+  logSearchResultsSaveFailure,
   logSupabasePersistenceError,
   placeSearchResultToRow,
 } from "@/lib/searchPersistence";
@@ -233,29 +234,48 @@ export async function POST(request: NextRequest) {
 
     const center = await geocodePrefecture(prefecture);
     const query = buildSearchQuery(keyword1, keyword2 ?? undefined, prefecture);
-    const excluded = await getExcludedPlaceIds(userId);
+    const excludedPlaceIds = await getExcludedPlaceIds(userId);
+    const previouslySavedPlaceIds =
+      await getPreviouslySavedPlaceIdsForUser(supabase, userId);
+    const previouslySavedPlaceIdCountAtStart = previouslySavedPlaceIds.size;
+
+    const searchExcludedPlaceIds = new Set([
+      ...excludedPlaceIds,
+      ...previouslySavedPlaceIds,
+    ]);
     const searcher = createIncrementalPlacesSearcher({
       query,
       center,
-      excludedPlaceIds: excluded,
+      excludedPlaceIds: searchExcludedPlaceIds,
     });
 
     const savedResults: PlaceSearchResult[] = [];
     const seenPlaceIds = new Set<string>();
     let fetchedCount = 0;
+    let duplicateExclusionCount = 0;
     let saveFailedCount = 0;
     let saveFailed = false;
 
-    while (savedResults.length < MAX_RESULTS) {
-      const dbSavedIds = await getSavedPlaceIdsForRequest(supabase, requestId);
-      const runtimeExcluded = new Set([
+    function buildRuntimeExcluded(): Set<string> {
+      return new Set([
         ...seenPlaceIds,
-        ...dbSavedIds,
+        ...previouslySavedPlaceIds,
+        ...excludedPlaceIds,
       ]);
+    }
 
+    function isDuplicatePlaceId(placeId: string): boolean {
+      return (
+        previouslySavedPlaceIds.has(placeId) ||
+        seenPlaceIds.has(placeId) ||
+        excludedPlaceIds.has(placeId)
+      );
+    }
+
+    while (savedResults.length < MAX_RESULTS) {
       const batchCandidates = await searcher.fetchNextBatch(
         SEARCH_BATCH_SIZE,
-        runtimeExcluded
+        buildRuntimeExcluded()
       );
 
       if (batchCandidates.length === 0) {
@@ -264,21 +284,29 @@ export async function POST(request: NextRequest) {
 
       fetchedCount += batchCandidates.length;
 
-      const toSaveCandidates = batchCandidates.filter(
-        (place) =>
-          !dbSavedIds.has(place.placeId) && !seenPlaceIds.has(place.placeId)
-      );
-      const duplicates = batchCandidates.length - toSaveCandidates.length;
+      const toSaveCandidates: typeof batchCandidates = [];
+      let batchDuplicates = 0;
 
       for (const place of batchCandidates) {
-        seenPlaceIds.add(place.placeId);
+        const placeId = place.placeId;
+        if (!placeId) continue;
+
+        if (isDuplicatePlaceId(placeId)) {
+          batchDuplicates++;
+          duplicateExclusionCount++;
+          seenPlaceIds.add(placeId);
+          continue;
+        }
+
+        seenPlaceIds.add(placeId);
+        toSaveCandidates.push(place);
       }
 
       if (toSaveCandidates.length === 0) {
         logSearchLoop({
           fetched: batchCandidates.length,
           saved: 0,
-          duplicates,
+          duplicates: batchDuplicates,
           total_saved: savedResults.length,
         });
         continue;
@@ -308,13 +336,25 @@ export async function POST(request: NextRequest) {
       if (!insertOutcome.ok) {
         saveFailedCount += resultRows.length;
         saveFailed = true;
+        logSearchResultsSaveFailure(insertOutcome.error, {
+          attemptedCount: resultRows.length,
+          sampleRow: resultRows[0] ?? null,
+          duplicateExclusionCount,
+          previouslySavedPlaceIdCount: previouslySavedPlaceIds.size,
+        });
         logSearchLoop({
           fetched: batchCandidates.length,
           saved: 0,
-          duplicates,
+          duplicates: batchDuplicates,
           total_saved: savedResults.length,
         });
         break;
+      }
+
+      for (const row of resultRows) {
+        previouslySavedPlaceIds.add(row.place_id);
+        seenPlaceIds.add(row.place_id);
+        searchExcludedPlaceIds.add(row.place_id);
       }
 
       savedResults.push(...batchResults);
@@ -322,7 +362,7 @@ export async function POST(request: NextRequest) {
       logSearchLoop({
         fetched: batchCandidates.length,
         saved: resultRows.length,
-        duplicates,
+        duplicates: batchDuplicates,
         total_saved: savedResults.length,
       });
 
@@ -330,6 +370,13 @@ export async function POST(request: NextRequest) {
         break;
       }
     }
+
+    authDebugInfo("api-places-search", {
+      user_id: userId,
+      previously_saved_place_ids_at_start: previouslySavedPlaceIdCountAtStart,
+      duplicate_exclusion_count: duplicateExclusionCount,
+      newly_saved_count: savedResults.length,
+    });
 
     if (savedResults.length === 0) {
       await supabase
