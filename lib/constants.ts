@@ -42,6 +42,9 @@ export const API_ERROR_MESSAGE =
 export const CREDIT_CONSUME_FAILED_MESSAGE =
   "クレジット消費に失敗しました。";
 
+export const DASHBOARD_SUPABASE_NOT_CONFIGURED_MESSAGE =
+  "共通ダッシュボードSupabaseの接続情報が設定されていません。";
+
 export const SAVE_RESULTS_FAILED_MESSAGE =
   "検索結果の保存に失敗しました。";
 

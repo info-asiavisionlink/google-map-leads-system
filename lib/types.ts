@@ -30,6 +30,8 @@ export type SearchApiResponse = {
   credit?: number | null;
   resultCount?: number;
   creditConsumed?: number;
+  creditBefore?: number;
+  creditAfter?: number;
   code?:
     | "unauthorized"
     | "insufficient_credit"

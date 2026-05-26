@@ -249,6 +249,7 @@ export async function POST(request: NextRequest) {
     const newPlaceIds = results.map((r) => r.placeId);
 
     let creditAfter: number;
+    let creditBeforeConsume: number | undefined;
     try {
       const consumeResult = await consumeDashboardCredits({
         userId,
@@ -257,13 +258,32 @@ export async function POST(request: NextRequest) {
         externalRequestId: searchRequestId,
       });
       creditAfter = consumeResult.credit;
+      creditBeforeConsume = consumeResult.creditBefore;
     } catch (consumeErr) {
       authDebugError(
         "api-places-search",
-        { failure: "consume_api", endpoint: "DASHBOARD_CREDIT_API_URL" },
+        { failure: "dashboard_supabase_consume", user_id: userId },
         consumeErr
       );
       await markSearchRequestFailed(searchRequestId, results.length);
+
+      if (
+        consumeErr instanceof DashboardCreditsError &&
+        consumeErr.code === "insufficient_credit"
+      ) {
+        return jsonResponse(
+          {
+            status: "error",
+            message: consumeErr.message,
+            results: [],
+            copyText: "",
+            credit: currentCredit,
+            code: "insufficient_credit",
+          },
+          402
+        );
+      }
+
       const detail =
         consumeErr instanceof DashboardCreditsError
           ? consumeErr.message
@@ -376,6 +396,8 @@ export async function POST(request: NextRequest) {
       results,
       copyText,
       credit: creditAfter,
+      creditBefore: creditBeforeConsume,
+      creditAfter,
       resultCount: results.length,
       creditConsumed: actualCreditCost,
     });

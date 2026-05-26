@@ -7,7 +7,18 @@ import {
   resolveAuthSystemApiUrl,
   safeJsonForLog,
 } from "@/lib/authDebug";
-import { TOOL_KEY } from "@/lib/constants";
+import {
+  DASHBOARD_SUPABASE_NOT_CONFIGURED_MESSAGE,
+  INSUFFICIENT_CREDIT_MESSAGE,
+  TOOL_KEY,
+  TOOL_NAME,
+  USER_INFO_MISSING_MESSAGE,
+} from "@/lib/constants";
+import {
+  getDashboardSupabaseAdmin,
+  getDashboardSupabaseConfig,
+  isDashboardSupabaseConfigured,
+} from "@/lib/dashboardSupabase/server";
 import {
   extractErrorFromBody,
   getBearerTokenFromHeader,
@@ -52,20 +63,6 @@ export function getAccessTokenFromRequest(
   request: NextRequest
 ): string | null {
   return getBearerTokenFromHeader(request.headers.get("authorization"));
-}
-
-function parseCreditFromBody(data: unknown): number {
-  if (typeof data !== "object" || data === null) {
-    throw new DashboardCreditsError("残高レスポンスの形式が不正です");
-  }
-  const obj = data as Record<string, unknown>;
-  const candidates = [obj.credit, obj.balance, obj.credit_after, obj.credit_balance];
-  for (const value of candidates) {
-    if (typeof value === "number" && !Number.isNaN(value)) {
-      return value;
-    }
-  }
-  throw new DashboardCreditsError("残高レスポンスに credit が含まれていません");
 }
 
 /** 共通ダッシュボード GET /api/tools/token/verify */
@@ -168,8 +165,84 @@ export function hasEnoughCredit(credit: number, creditCost: number): boolean {
   return credit >= creditCost;
 }
 
-type ConsumeResult = {
+type ProfileCreditRow = {
+  id: string;
+  credit: number | null;
+};
+
+function parseProfileCredit(value: unknown): number | null {
+  if (typeof value === "number" && !Number.isNaN(value)) return value;
+  return null;
+}
+
+function logDashboardSupabaseConfig(): void {
+  const config = getDashboardSupabaseConfig();
+  authDebugInfo("dashboard-supabase-config", {
+    configured: isDashboardSupabaseConfigured(),
+    env_source: config?.envSource ?? "(none)",
+    url_exists: Boolean(config?.url),
+    service_role_key_exists: Boolean(config?.serviceRoleKey),
+  });
+}
+
+/** 共通ダッシュボード Supabase profiles からクレジット残高を取得 */
+export async function getDashboardUserCredit(userId: string): Promise<number> {
+  if (!userId.trim()) {
+    throw new DashboardCreditsError(USER_INFO_MISSING_MESSAGE, 401, "unauthorized");
+  }
+
+  logDashboardSupabaseConfig();
+
+  const supabase = getDashboardSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, credit")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error) {
+    authDebugError("dashboard-credit-fetch", {
+      user_id: userId,
+      error: error.message,
+    });
+    throw new DashboardCreditsError(
+      "クレジット残高の取得に失敗しました。",
+      500,
+      "credit_fetch_failed"
+    );
+  }
+
+  if (!data) {
+    throw new DashboardCreditsError(
+      "ユーザーが見つかりませんでした。",
+      404,
+      "user_not_found"
+    );
+  }
+
+  const credit = parseProfileCredit((data as ProfileCreditRow).credit);
+  if (credit === null) {
+    throw new DashboardCreditsError(
+      "クレジット残高の取得に失敗しました。",
+      500,
+      "credit_fetch_failed"
+    );
+  }
+
+  authDebugInfo("dashboard-credit-fetch", {
+    user_id: userId,
+    credit_before: credit,
+  });
+
+  return credit;
+}
+
+export type ConsumeDashboardCreditsResult = {
   credit: number;
+  creditBefore: number;
+  creditUsed: number;
+  creditAfter: number;
+  resultCount: number;
 };
 
 export type ConsumeDashboardCreditsParams = {
@@ -178,94 +251,188 @@ export type ConsumeDashboardCreditsParams = {
   amount: number;
   resultCount: number;
   externalRequestId: string;
-  accessToken?: string;
 };
 
-function resolveConsumeUrl(): string {
-  const dedicated = process.env.DASHBOARD_CREDIT_API_URL?.trim();
-  if (dedicated) return dedicated;
-  return `${getDashboardBaseUrl()}/api/credits/consume`;
-}
+async function saveToolUsageLog(params: {
+  userId: string;
+  toolKey: string;
+  amount: number;
+  resultCount: number;
+  creditBefore: number;
+  creditAfter: number;
+  externalRequestId: string;
+}): Promise<void> {
+  const supabase = getDashboardSupabaseAdmin();
 
-function buildConsumeHeaders(accessToken?: string): HeadersInit {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+  const row = {
+    user_id: params.userId,
+    tool_key: params.toolKey,
+    tool_name: TOOL_NAME,
+    credit_cost: params.amount,
+    credit_before: params.creditBefore,
+    credit_after: params.creditAfter,
+    status: "completed",
+    message: `${params.resultCount}件取得（${params.amount}クレジット消費）`,
   };
-  const secret = process.env.DASHBOARD_CREDIT_API_SECRET?.trim();
-  if (secret) {
-    headers.Authorization = `Bearer ${secret}`;
-  } else if (accessToken) {
-    headers.Authorization = `Bearer ${accessToken}`;
+
+  const { error } = await supabase.from("tool_usage_logs").insert(row);
+
+  if (error) {
+    console.warn(
+      "[dashboard-credits] tool_usage_logs 保存をスキップ:",
+      error.message,
+      "external_request_id:",
+      params.externalRequestId
+    );
+    authDebugError("dashboard-usage-log-skipped", {
+      user_id: params.userId,
+      external_request_id: params.externalRequestId,
+      error: error.message,
+    });
+  } else {
+    authDebugInfo("dashboard-usage-log-saved", {
+      user_id: params.userId,
+      external_request_id: params.externalRequestId,
+      credit_used: params.amount,
+    });
   }
-  return headers;
 }
 
-/** 共通ダッシュボードのクレジット消費 API（取得件数 × 単価） */
+/**
+ * 共通ダッシュボード Supabase の profiles.credit を直接減算（取得件数 × 単価）
+ * Googleマップツール側 Supabase は更新しない。
+ */
 export async function consumeDashboardCredits(
   params: ConsumeDashboardCreditsParams
-): Promise<ConsumeResult> {
-  const consumeUrl = resolveConsumeUrl();
-  const toolKey = params.toolKey ?? getToolKey();
-  const accessToken = params.accessToken;
-
-  authDebugInfo("auth-system-consume-request", {
-    request_url: consumeUrl,
-    method: "POST",
-    tool_key: toolKey,
-    user_id: params.userId,
-    amount: params.amount,
-    result_count: params.resultCount,
-    external_request_id: params.externalRequestId,
-    authorization_header_exists: Boolean(
-      process.env.DASHBOARD_CREDIT_API_SECRET?.trim() || accessToken
-    ),
-    token_length: accessToken ? maskToken(accessToken).token_length : 0,
-  });
-
-  const res = await fetch(consumeUrl, {
-    method: "POST",
-    headers: buildConsumeHeaders(accessToken),
-    cache: "no-store",
-    body: JSON.stringify({
-      user_id: params.userId,
-      tool_key: toolKey,
-      amount: params.amount,
-      result_count: params.resultCount,
-      external_request_id: params.externalRequestId,
-    }),
-  });
-
-  let body: unknown = null;
-  try {
-    body = await res.json();
-  } catch {
-    body = null;
+): Promise<ConsumeDashboardCreditsResult> {
+  const userId = params.userId.trim();
+  if (!userId) {
+    throw new DashboardCreditsError(USER_INFO_MISSING_MESSAGE, 401, "unauthorized");
   }
 
-  if (!res.ok) {
-    const code =
-      typeof body === "object" && body !== null && "code" in body
-        ? String((body as { code: unknown }).code)
-        : undefined;
-    const message = extractErrorFromBody(
-      body,
-      "クレジットの消費に失敗しました"
-    );
-    authDebugError("auth-system-consume-failed", {
-      response_status: res.status,
-      error_code: code ?? "(none)",
-      error_message: message,
-      response_body: safeJsonForLog(body),
+  if (!isDashboardSupabaseConfigured()) {
+    authDebugError("dashboard-credits-consume", {
+      failure: "supabase_not_configured",
     });
-    throw new DashboardCreditsError(message, res.status, code);
+    throw new DashboardCreditsError(
+      DASHBOARD_SUPABASE_NOT_CONFIGURED_MESSAGE,
+      500,
+      "consume_failed"
+    );
   }
 
-  const credit = parseCreditFromBody(body);
-  authDebugInfo("auth-system-consume-success", {
-    response_status: res.status,
-    credit_after: credit,
-    response_body: safeJsonForLog(body),
+  const toolKey = params.toolKey ?? getToolKey();
+  const amount = params.amount;
+  const resultCount = params.resultCount;
+
+  authDebugInfo("dashboard-credits-consume-start", {
+    user_id: userId,
+    tool_key: toolKey,
+    amount,
+    result_count: resultCount,
+    external_request_id: params.externalRequestId,
   });
 
-  return { credit };
+  logDashboardSupabaseConfig();
+
+  const creditBefore = await getDashboardUserCredit(userId);
+
+  if (amount <= 0) {
+    authDebugInfo("dashboard-credits-consume-skip", {
+      user_id: userId,
+      reason: "zero_amount",
+      credit_before: creditBefore,
+    });
+    return {
+      credit: creditBefore,
+      creditBefore,
+      creditUsed: 0,
+      creditAfter: creditBefore,
+      resultCount,
+    };
+  }
+
+  if (creditBefore < amount) {
+    authDebugError("dashboard-credits-consume", {
+      failure: "insufficient_credit",
+      user_id: userId,
+      credit_before: creditBefore,
+      required_credit: amount,
+    });
+    throw new DashboardCreditsError(
+      INSUFFICIENT_CREDIT_MESSAGE,
+      402,
+      "insufficient_credit"
+    );
+  }
+
+  const creditAfter = creditBefore - amount;
+  const supabase = getDashboardSupabaseAdmin();
+
+  const { data: updated, error: updateError } = await supabase
+    .from("profiles")
+    .update({ credit: creditAfter })
+    .eq("id", userId)
+    .eq("credit", creditBefore)
+    .select("credit")
+    .maybeSingle();
+
+  if (updateError) {
+    authDebugError(
+      "dashboard-credits-consume",
+      { failure: "profile_update_error", user_id: userId },
+      updateError
+    );
+    throw new DashboardCreditsError(
+      "クレジット残高の更新に失敗しました。",
+      500,
+      "consume_failed"
+    );
+  }
+
+  if (!updated) {
+    authDebugError("dashboard-credits-consume", {
+      failure: "optimistic_lock_conflict",
+      user_id: userId,
+      credit_before: creditBefore,
+    });
+    throw new DashboardCreditsError(
+      "クレジット残高の更新に失敗しました。再度お試しください。",
+      409,
+      "consume_failed"
+    );
+  }
+
+  const confirmedCredit =
+    parseProfileCredit((updated as ProfileCreditRow).credit) ?? creditAfter;
+
+  try {
+    await saveToolUsageLog({
+      userId,
+      toolKey,
+      amount,
+      resultCount,
+      creditBefore,
+      creditAfter: confirmedCredit,
+      externalRequestId: params.externalRequestId,
+    });
+  } catch (logErr) {
+    console.warn("[dashboard-credits] 利用履歴保存で例外:", logErr);
+  }
+
+  authDebugInfo("dashboard-credits-consume-success", {
+    user_id: userId,
+    credit_before: creditBefore,
+    credit_used: amount,
+    credit_after: confirmedCredit,
+    result_count: resultCount,
+  });
+
+  return {
+    credit: confirmedCredit,
+    creditBefore,
+    creditUsed: amount,
+    creditAfter: confirmedCredit,
+    resultCount,
+  };
 }
