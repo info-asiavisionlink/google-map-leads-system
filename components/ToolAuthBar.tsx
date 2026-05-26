@@ -1,11 +1,14 @@
-import { GOOGLE_MAP_SEARCH_CREDIT_COST } from "@/lib/constants";
+import {
+  CREDIT_PER_RESULT,
+  MAX_CREDIT_COST,
+  MAX_RESULTS,
+} from "@/lib/constants";
 import { getSafeDashboardUrl } from "@/lib/toolToken";
 import type { ToolUser } from "@/lib/toolUser";
 
 type ToolAuthBarProps = {
   user: ToolUser | null;
   isLoading?: boolean;
-  /** 照合中メッセージ（デフォルト: ユーザー情報を確認中…） */
   loadingMessage?: string;
 };
 
@@ -25,7 +28,11 @@ export default function ToolAuthBar({
   }
 
   if (!user) {
-    return null;
+    return (
+      <div className="rounded-2xl border border-gray-200 bg-gray-50 p-5 text-sm text-gray-600">
+        ログイン前でも検索条件の入力は可能です。検索実行時はダッシュボードからのログインが必要です。
+      </div>
+    );
   }
 
   const displayName = user.username?.trim() || user.email || "ユーザー";
@@ -44,7 +51,7 @@ export default function ToolAuthBar({
           <p className="mt-4 text-sm text-gray-700">
             残クレジット:{" "}
             <span className="text-base font-bold text-blue-700">
-              {user.credit}
+              {user.credit.toLocaleString("ja-JP")}
             </span>
           </p>
         </div>
@@ -56,11 +63,8 @@ export default function ToolAuthBar({
         </a>
       </div>
       <p className="mt-4 border-t border-gray-100 pt-4 text-xs text-gray-500">
-        この検索は{" "}
-        <span className="font-semibold text-blue-700">
-          {GOOGLE_MAP_SEARCH_CREDIT_COST}
-        </span>{" "}
-        Credit を消費します（管理システム経由で減算）
+        最大{MAX_RESULTS}件 / 1件{CREDIT_PER_RESULT}クレジット / 最大
+        {MAX_CREDIT_COST}クレジット（実際は取得件数に応じて消費・共通ダッシュボード経由）
       </p>
     </div>
   );

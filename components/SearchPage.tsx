@@ -8,11 +8,12 @@ import ToolAuthBar from "@/components/ToolAuthBar";
 import {
   API_ERROR_MESSAGE,
   CREDIT_CONSUME_FAILED_MESSAGE,
-  GOOGLE_MAP_SEARCH_CREDIT_COST,
   INSUFFICIENT_CREDIT_MESSAGE,
-  NO_NEW_RESULTS_MESSAGE,
+  MIN_CREDIT_TO_SEARCH,
+  NOT_LOGGED_IN_MESSAGE,
+  NO_RESULTS_FOUND_MESSAGE,
+  SAVE_RESULTS_FAILED_MESSAGE,
   TOKEN_AUTH_EXPIRED_MESSAGE,
-  TOOL_USER_QUERY_MISSING_MESSAGE,
 } from "@/lib/constants";
 import {
   clearStoredAccessToken,
@@ -38,9 +39,12 @@ function authHeaders(token: string): HeadersInit {
   };
 }
 
-/** access_token フロー（検索 API 用・現段階は consume 変更なし） */
 function bootstrapAccessToken(): void {
   resolveAccessToken();
+}
+
+function formatCredit(n: number): string {
+  return n.toLocaleString("ja-JP");
 }
 
 export default function SearchPage() {
@@ -59,19 +63,16 @@ export default function SearchPage() {
   }, []);
 
   const {
-    status: userStatus,
     user,
-    authError: userAuthError,
     isLoading: isUserLoading,
     isAuthenticated: isUserAuthenticated,
     remainingCredit,
+    patchUserCredit,
   } = useToolUser();
 
   const {
     accessToken,
     verify,
-    creditCost,
-    canSearch: canSearchByToken,
     refreshVerify,
     patchRemainingCredit,
   } = useToolAuth();
@@ -84,16 +85,22 @@ export default function SearchPage() {
   const [status, setStatus] = useState<SearchApiResponse["status"] | null>(
     null
   );
+  const [lastResultCount, setLastResultCount] = useState<number | null>(null);
+  const [lastCreditConsumed, setLastCreditConsumed] = useState<number | null>(
+    null
+  );
+  const [lastRemainingCredit, setLastRemainingCredit] = useState<number | null>(
+    null
+  );
 
-  const searchCreditCost = verify?.tool.credit_cost ?? GOOGLE_MAP_SEARCH_CREDIT_COST;
-  const canSearch =
-    isUserAuthenticated &&
-    canSearchByToken &&
-    (remainingCredit ?? user?.credit ?? 0) >= searchCreditCost;
+  const displayCredit =
+    remainingCredit ?? user?.credit ?? verify?.credit ?? null;
 
   async function handleSearch(values: SearchFormValues) {
+    setSearchError(null);
+
     if (!isUserAuthenticated || !user) {
-      setSearchError(userAuthError ?? TOOL_USER_QUERY_MISSING_MESSAGE);
+      setSearchError(NOT_LOGGED_IN_MESSAGE);
       return;
     }
 
@@ -102,17 +109,20 @@ export default function SearchPage() {
       return;
     }
 
-    if ((remainingCredit ?? user.credit) < searchCreditCost) {
+    const creditBalance = remainingCredit ?? user.credit ?? verify.credit;
+    if (creditBalance < MIN_CREDIT_TO_SEARCH) {
       setSearchError(INSUFFICIENT_CREDIT_MESSAGE);
       return;
     }
 
     setIsLoading(true);
-    setSearchError(null);
     setMessage(null);
     setStatus(null);
     setResults([]);
     setCopyText("");
+    setLastResultCount(null);
+    setLastCreditConsumed(null);
+    setLastRemainingCredit(null);
 
     try {
       const res = await fetch("/api/places/search", {
@@ -122,7 +132,6 @@ export default function SearchPage() {
           area: values.area,
           keyword1: values.keyword1,
           keyword2: values.keyword2 || undefined,
-          radiusM: values.radiusM,
         }),
       });
 
@@ -135,11 +144,9 @@ export default function SearchPage() {
         credit: data.credit,
       });
 
-      setStatus(data.status);
-      setMessage(data.message);
-
       if (data.credit !== undefined && data.credit !== null) {
         patchRemainingCredit(data.credit);
+        patchUserCredit(data.credit);
       }
 
       if (res.status === 401 || data.code === "unauthorized") {
@@ -153,12 +160,20 @@ export default function SearchPage() {
         setSearchError(data.message || INSUFFICIENT_CREDIT_MESSAGE);
         if (data.credit !== undefined && data.credit !== null) {
           patchRemainingCredit(data.credit);
+          patchUserCredit(data.credit);
         }
         return;
       }
 
       if (res.status === 500 && data.code === "consume_failed") {
         setSearchError(data.message || CREDIT_CONSUME_FAILED_MESSAGE);
+        setResults([]);
+        setCopyText("");
+        return;
+      }
+
+      if (data.code === "save_failed") {
+        setSearchError(data.message || SAVE_RESULTS_FAILED_MESSAGE);
         setResults([]);
         setCopyText("");
         return;
@@ -171,15 +186,24 @@ export default function SearchPage() {
         return;
       }
 
-      setResults(data.results);
-      setCopyText(data.copyText);
-
-      if (data.status === "success") {
-        await refreshVerify();
-      }
+      setStatus(data.status);
+      setMessage(data.message);
 
       if (data.status === "no_results") {
         setSearchError(null);
+        setLastResultCount(data.resultCount ?? 0);
+        setLastCreditConsumed(data.creditConsumed ?? 0);
+        if (data.credit != null) setLastRemainingCredit(data.credit);
+        return;
+      }
+
+      if (data.status === "success") {
+        setResults(data.results);
+        setCopyText(data.copyText);
+        setLastResultCount(data.resultCount ?? data.results.length);
+        setLastCreditConsumed(data.creditConsumed ?? null);
+        if (data.credit != null) setLastRemainingCredit(data.credit);
+        await refreshVerify();
       }
     } catch {
       setSearchError(API_ERROR_MESSAGE);
@@ -206,7 +230,7 @@ export default function SearchPage() {
         </h1>
         <div className="mt-4 space-y-3 text-sm leading-relaxed text-gray-600">
           <p>
-            エリアと業種キーワードを入力するだけで、Googleマップに掲載されている店舗・企業情報を自動で取得できます。
+            都道府県と業種キーワードを入力するだけで、Googleマップに掲載されている店舗・企業情報を自動で取得できます。
           </p>
           <p>
             取得したリストは、ExcelやGoogleスプレッドシートにそのまま貼り付けできる形式でコピーできます。
@@ -217,16 +241,7 @@ export default function SearchPage() {
         </div>
       </header>
 
-      {userStatus === "unauthenticated" && userAuthError && (
-        <div
-          role="alert"
-          className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
-        >
-          {userAuthError}
-        </div>
-      )}
-
-      {isUserAuthenticated && user && user.credit < searchCreditCost && (
+      {displayCredit != null && displayCredit < MIN_CREDIT_TO_SEARCH && (
         <div
           role="alert"
           className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
@@ -238,8 +253,7 @@ export default function SearchPage() {
       <SearchForm
         onSearch={handleSearch}
         isLoading={isLoading}
-        disabled={!canSearch || isLoading || isUserLoading}
-        creditCost={searchCreditCost}
+        disabled={isLoading}
       />
 
       {isLoading && (
@@ -249,7 +263,7 @@ export default function SearchPage() {
         </div>
       )}
 
-      {searchError && isUserAuthenticated && (
+      {searchError && (
         <div
           role="alert"
           className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
@@ -258,15 +272,39 @@ export default function SearchPage() {
         </div>
       )}
 
-      {status === "no_results" && message && !searchError && (
+      {status === "no_results" && !searchError && (
         <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          {message || NO_NEW_RESULTS_MESSAGE}
+          {message || NO_RESULTS_FOUND_MESSAGE}
         </div>
       )}
 
       {status === "success" && message && (
-        <div className="mt-6 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-800">
-          {message}
+        <div className="mt-6 rounded-lg border border-green-200 bg-green-50 px-4 py-4 text-sm text-green-900">
+          <p className="font-medium">{message}</p>
+          {lastResultCount != null && (
+            <dl className="mt-3 grid gap-1 sm:grid-cols-3">
+              <div>
+                <dt className="text-xs text-green-700">取得件数</dt>
+                <dd className="font-semibold">{lastResultCount}件</dd>
+              </div>
+              {lastCreditConsumed != null && (
+                <div>
+                  <dt className="text-xs text-green-700">消費クレジット</dt>
+                  <dd className="font-semibold">
+                    {formatCredit(lastCreditConsumed)}
+                  </dd>
+                </div>
+              )}
+              {lastRemainingCredit != null && (
+                <div>
+                  <dt className="text-xs text-green-700">残りクレジット</dt>
+                  <dd className="font-semibold">
+                    {formatCredit(lastRemainingCredit)}
+                  </dd>
+                </div>
+              )}
+            </dl>
+          )}
         </div>
       )}
 

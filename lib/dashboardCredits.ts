@@ -172,34 +172,66 @@ type ConsumeResult = {
   credit: number;
 };
 
-/** 共通ダッシュボード POST /api/credits/consume（credit_cost は送らない） */
+export type ConsumeDashboardCreditsParams = {
+  userId: string;
+  toolKey?: string;
+  amount: number;
+  resultCount: number;
+  externalRequestId: string;
+  accessToken?: string;
+};
+
+function resolveConsumeUrl(): string {
+  const dedicated = process.env.DASHBOARD_CREDIT_API_URL?.trim();
+  if (dedicated) return dedicated;
+  return `${getDashboardBaseUrl()}/api/credits/consume`;
+}
+
+function buildConsumeHeaders(accessToken?: string): HeadersInit {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  const secret = process.env.DASHBOARD_CREDIT_API_SECRET?.trim();
+  if (secret) {
+    headers.Authorization = `Bearer ${secret}`;
+  } else if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+  return headers;
+}
+
+/** 共通ダッシュボードのクレジット消費 API（取得件数 × 単価） */
 export async function consumeDashboardCredits(
-  accessToken: string,
-  externalRequestId: string
+  params: ConsumeDashboardCreditsParams
 ): Promise<ConsumeResult> {
-  const baseUrl = getDashboardBaseUrl();
-  const consumeUrl = `${baseUrl}/api/credits/consume`;
-  const toolKey = getToolKey();
+  const consumeUrl = resolveConsumeUrl();
+  const toolKey = params.toolKey ?? getToolKey();
+  const accessToken = params.accessToken;
 
   authDebugInfo("auth-system-consume-request", {
     request_url: consumeUrl,
     method: "POST",
     tool_key: toolKey,
-    external_request_id: externalRequestId,
-    authorization_header_exists: true,
-    token_length: maskToken(accessToken).token_length,
+    user_id: params.userId,
+    amount: params.amount,
+    result_count: params.resultCount,
+    external_request_id: params.externalRequestId,
+    authorization_header_exists: Boolean(
+      process.env.DASHBOARD_CREDIT_API_SECRET?.trim() || accessToken
+    ),
+    token_length: accessToken ? maskToken(accessToken).token_length : 0,
   });
 
   const res = await fetch(consumeUrl, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
+    headers: buildConsumeHeaders(accessToken),
     cache: "no-store",
     body: JSON.stringify({
+      user_id: params.userId,
       tool_key: toolKey,
-      external_request_id: externalRequestId,
+      amount: params.amount,
+      result_count: params.resultCount,
+      external_request_id: params.externalRequestId,
     }),
   });
 

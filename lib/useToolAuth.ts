@@ -14,6 +14,7 @@ import {
 import {
   CREDIT_FETCH_FAILED_MESSAGE,
   LOGIN_ERROR_MESSAGE,
+  MIN_CREDIT_TO_SEARCH,
   TOKEN_AUTH_EXPIRED_MESSAGE,
 } from "@/lib/constants";
 import {
@@ -252,7 +253,6 @@ export function useToolAuth() {
     setVerify((prev) => (prev ? { ...prev, credit } : prev));
   }, []);
 
-  const creditCost = verify?.tool.credit_cost ?? 30;
   const remainingCredit =
     userSession?.remaining_credit ?? verify?.credit ?? null;
 
@@ -266,11 +266,10 @@ export function useToolAuth() {
     refreshVerify,
     setVerify: setVerifyWithSession,
     patchRemainingCredit,
-    creditCost,
     remainingCredit,
     canSearch:
       status === "authenticated" &&
       verify !== null &&
-      verify.credit >= creditCost,
+      verify.credit >= MIN_CREDIT_TO_SEARCH,
   };
 }

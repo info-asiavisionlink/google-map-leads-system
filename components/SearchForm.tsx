@@ -1,36 +1,40 @@
 "use client";
 
-import { RADIUS_OPTIONS, type RadiusM } from "@/lib/constants";
+import {
+  CREDIT_PER_RESULT,
+  MAX_CREDIT_COST,
+  MAX_RESULTS,
+  MIN_CREDIT_TO_SEARCH,
+} from "@/lib/constants";
+import { PREFECTURES } from "@/lib/prefectures";
 import { FormEvent, useState } from "react";
 
 export type SearchFormValues = {
   area: string;
   keyword1: string;
   keyword2: string;
-  radiusM: RadiusM;
 };
 
 type SearchFormProps = {
   onSearch: (values: SearchFormValues) => void;
   isLoading: boolean;
   disabled?: boolean;
-  creditCost?: number;
 };
 
 export default function SearchForm({
   onSearch,
   isLoading,
   disabled = false,
-  creditCost,
 }: SearchFormProps) {
   const [area, setArea] = useState("");
   const [keyword1, setKeyword1] = useState("");
   const [keyword2, setKeyword2] = useState("");
-  const [radiusM, setRadiusM] = useState<RadiusM>(2000);
+
+  const formDisabled = isLoading || disabled;
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    onSearch({ area, keyword1, keyword2, radiusM });
+    onSearch({ area, keyword1, keyword2 });
   }
 
   return (
@@ -39,82 +43,77 @@ export default function SearchForm({
       className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm sm:p-8"
     >
       <h2 className="mb-5 text-base font-semibold text-gray-900">検索条件</h2>
+
+      <div className="mb-6 rounded-lg border border-blue-100 bg-blue-50/80 px-4 py-3 text-sm leading-relaxed text-gray-700">
+        <ul className="list-inside list-disc space-y-1">
+          <li>最大{MAX_RESULTS}件まで取得できます</li>
+          <li>1件あたり{CREDIT_PER_RESULT}クレジット消費します</li>
+          <li>最大取得時は{MAX_CREDIT_COST}クレジット消費します</li>
+          <li>
+            取得件数が{MAX_RESULTS}件未満の場合は、取得できた件数分のみ消費します
+          </li>
+        </ul>
+        <p className="mt-3 border-t border-blue-100 pt-3 text-xs text-gray-600">
+          最大取得件数：{MAX_RESULTS}件 / 消費クレジット：1件あたり
+          {CREDIT_PER_RESULT}クレジット / 最大消費：{MAX_CREDIT_COST}クレジット
+          <br />
+          検索には最低{MIN_CREDIT_TO_SEARCH}クレジット以上が必要です（実際の消費は取得件数に応じます）
+        </p>
+      </div>
+
       <div className="grid gap-5 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 sm:col-span-2">
           <span className="text-sm font-medium text-gray-700">
-            エリア <span className="text-red-500">*</span>
+            都道府県 <span className="text-red-500">*</span>
           </span>
-          <input
-            type="text"
+          <select
             value={area}
             onChange={(e) => setArea(e.target.value)}
-            placeholder="例）新宿駅、渋谷、銀座、大阪梅田"
             className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
-            disabled={isLoading || disabled}
+            disabled={formDisabled}
             required
-          />
+          >
+            <option value="">都道府県を選択してください</option>
+            {PREFECTURES.map((pref) => (
+              <option key={pref} value={pref}>
+                {pref}
+              </option>
+            ))}
+          </select>
         </label>
 
         <label className="flex flex-col gap-1.5">
           <span className="text-sm font-medium text-gray-700">
-            キーワード1（業種・必須） <span className="text-red-500">*</span>
+            大カテゴリー・業種 <span className="text-red-500">*</span>
           </span>
           <input
             type="text"
             value={keyword1}
             onChange={(e) => setKeyword1(e.target.value)}
-            placeholder="例）美容室、飲食店、整体、歯医者、不動産会社"
+            placeholder="例：美容室、飲食店、整体、歯医者、不動産会社"
             className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
-            disabled={isLoading || disabled}
+            disabled={formDisabled}
             required
           />
         </label>
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-gray-700">
-            キーワード2（絞り込み・任意）
-          </span>
+          <span className="text-sm font-medium text-gray-700">詳細キーワード</span>
           <input
             type="text"
             value={keyword2}
             onChange={(e) => setKeyword2(e.target.value)}
-            placeholder="例）髪質改善、個室、駅近、深夜営業、口コミ高評価"
+            placeholder="例：髪質改善、個室、駅近、深夜営業、口コミ高評価"
             className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
-            disabled={isLoading || disabled}
+            disabled={formDisabled}
           />
-        </label>
-
-        <label className="flex flex-col gap-1.5 sm:col-span-2">
-          <span className="text-sm font-medium text-gray-700">
-            検索範囲 <span className="text-red-500">*</span>
-          </span>
-          <select
-            value={radiusM}
-            onChange={(e) => setRadiusM(Number(e.target.value) as RadiusM)}
-            className="max-w-xs rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
-            disabled={isLoading || disabled}
-            required
-          >
-            {RADIUS_OPTIONS.map((r) => (
-              <option key={r} value={r}>
-                {r}m
-              </option>
-            ))}
-          </select>
         </label>
       </div>
 
       <div className="mt-8 border-t border-gray-100 pt-6">
-        {creditCost != null && (
-          <p className="mb-3 text-sm text-gray-600">
-            この検索は
-            <span className="mx-1 font-semibold text-blue-700">{creditCost}</span>
-            Credit消費します（新規1件以上取得できた場合のみ）
-          </p>
-        )}
         <button
           type="submit"
-          disabled={isLoading || disabled}
+          disabled={formDisabled}
           className="w-full rounded-lg bg-blue-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
         >
           {isLoading ? "リストを作成中..." : "リストを作成する"}

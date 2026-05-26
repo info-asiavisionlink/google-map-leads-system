@@ -1,4 +1,4 @@
-import { GOOGLE_MAP_SEARCH_CREDIT_COST, TOOL_KEY, TOOL_NAME } from "@/lib/constants";
+import { MIN_CREDIT_TO_SEARCH, TOOL_KEY, TOOL_NAME } from "@/lib/constants";
 
 export type ToolVerifyUser = {
   id: string;
@@ -95,7 +95,7 @@ export function parseToolVerifyResponse(data: unknown): ToolVerifyResult {
     pickNumber(toolRaw?.credit_cost) ??
     pickNumber(payload.credit_cost) ??
     pickNumber(root.credit_cost) ??
-    GOOGLE_MAP_SEARCH_CREDIT_COST;
+    MIN_CREDIT_TO_SEARCH;
 
   if (!userId) {
     throw new Error("トークン検証レスポンスに user.id がありません");

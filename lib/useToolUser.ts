@@ -104,10 +104,13 @@ export function useToolUser() {
     const queryResult = resolveToolUserQuery();
 
     if (!queryResult.ok) {
-      setStatus("unauthenticated");
-      setAuthError(mapErrorMessage(queryResult.code, ""));
-      setErrorCode(queryResult.code);
-      setUser(null);
+      const code = queryResult.code;
+      queueMicrotask(() => {
+        setStatus("unauthenticated");
+        setAuthError(mapErrorMessage(code, ""));
+        setErrorCode(code);
+        setUser(null);
+      });
       return;
     }
 
@@ -176,6 +179,10 @@ export function useToolUser() {
     };
   }, [runVerify]);
 
+  const patchUserCredit = useCallback((credit: number) => {
+    setUser((prev) => (prev ? { ...prev, credit } : prev));
+  }, []);
+
   return {
     status,
     user,
@@ -184,5 +191,6 @@ export function useToolUser() {
     isLoading: status === "loading",
     isAuthenticated: status === "authenticated" && user !== null,
     remainingCredit: user?.credit ?? null,
+    patchUserCredit,
   };
 }

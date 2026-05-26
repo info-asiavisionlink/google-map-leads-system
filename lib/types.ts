@@ -28,9 +28,12 @@ export type SearchApiResponse = {
   results: PlaceSearchResult[];
   copyText: string;
   credit?: number | null;
+  resultCount?: number;
+  creditConsumed?: number;
   code?:
     | "unauthorized"
     | "insufficient_credit"
     | "api_error"
-    | "consume_failed";
+    | "consume_failed"
+    | "save_failed";
 };

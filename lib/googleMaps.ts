@@ -1,3 +1,4 @@
+import { MAX_RESULTS } from "@/lib/constants";
 import {
   detectClosedDays,
   formatBusinessStatus,
@@ -49,6 +50,11 @@ const PLACE_DETAILS_FIELD_MASK = [
   "priceLevel",
   "photos",
 ].join(",");
+
+/** 都道府県中心から外側へ広げる検索リング（km） */
+export const SEARCH_RING_RADIUS_KM = [10, 20, 35, 50, 75, 100] as const;
+
+const POINTS_PER_RING = 8;
 
 function getApiKey(): string {
   const key = process.env.GOOGLE_MAPS_API_KEY;
@@ -104,6 +110,71 @@ export async function geocodeArea(area: string): Promise<GeocodeResult> {
   };
 }
 
+export async function geocodePrefecture(
+  prefecture: string
+): Promise<{ lat: number; lng: number }> {
+  const result = await geocodeArea(`${prefecture} 日本`);
+  return { lat: result.latitude, lng: result.longitude };
+}
+
+export type SearchPoint = {
+  lat: number;
+  lng: number;
+  /** locationBias 円の半径（メートル） */
+  radiusM: number;
+};
+
+function destinationPoint(
+  lat: number,
+  lng: number,
+  distanceKm: number,
+  bearingDeg: number
+): { lat: number; lng: number } {
+  const earthRadiusKm = 6371;
+  const bearing = (bearingDeg * Math.PI) / 180;
+  const lat1 = (lat * Math.PI) / 180;
+  const lng1 = (lng * Math.PI) / 180;
+  const angularDistance = distanceKm / earthRadiusKm;
+
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDistance) +
+      Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing)
+  );
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2)
+    );
+
+  return {
+    lat: (lat2 * 180) / Math.PI,
+    lng: (lng2 * 180) / Math.PI,
+  };
+}
+
+/** 中心 → 各リング上の地点を外側から順に並べる */
+export function generateCircularSearchPoints(
+  center: { lat: number; lng: number },
+  radiusesKm: readonly number[] = SEARCH_RING_RADIUS_KM,
+  pointsPerRing: number = POINTS_PER_RING
+): SearchPoint[] {
+  const points: SearchPoint[] = [];
+  const centerRadiusM = (radiusesKm[0] ?? 10) * 1000;
+  points.push({ lat: center.lat, lng: center.lng, radiusM: centerRadiusM });
+
+  for (const radiusKm of radiusesKm) {
+    const radiusM = radiusKm * 1000;
+    for (let i = 0; i < pointsPerRing; i++) {
+      const bearing = (360 / pointsPerRing) * i;
+      const dest = destinationPoint(center.lat, center.lng, radiusKm, bearing);
+      points.push({ lat: dest.lat, lng: dest.lng, radiusM });
+    }
+  }
+
+  return points;
+}
+
 type NewPlaceSearchItem = {
   id?: string;
   displayName?: { text?: string };
@@ -132,32 +203,46 @@ export type TextSearchPlace = {
   googleMapsUri?: string;
 };
 
-export type SearchPlacesParams = {
-  query: string;
-  latitude: number;
-  longitude: number;
-  radiusM: number;
-};
+function mapSearchItem(item: NewPlaceSearchItem): TextSearchPlace | null {
+  if (!item.id) return null;
+  const placeId = normalizePlaceId(item.id);
+  return {
+    placeId,
+    name: item.displayName?.text ?? "",
+    formattedAddress: item.formattedAddress,
+    latitude: item.location?.latitude,
+    longitude: item.location?.longitude,
+    rating: item.rating,
+    userRatingCount: item.userRatingCount,
+    businessStatus: item.businessStatus,
+    primaryType: item.primaryType,
+    category: item.primaryTypeDisplayName?.text,
+    googleMapsUri: item.googleMapsUri,
+  };
+}
 
-export async function searchPlaces(
-  params: SearchPlacesParams
+export async function searchPlacesAtPoint(
+  query: string,
+  point: SearchPoint,
+  limit: number
 ): Promise<TextSearchPlace[]> {
   const places: TextSearchPlace[] = [];
   let pageToken: string | undefined;
+  const maxPerPoint = Math.min(60, Math.max(1, limit));
 
   do {
     const body: Record<string, unknown> = {
-      textQuery: params.query,
+      textQuery: query,
       languageCode: "ja",
       regionCode: "JP",
-      maxResultCount: 20,
+      maxResultCount: Math.min(20, maxPerPoint - places.length),
       locationBias: {
         circle: {
           center: {
-            latitude: params.latitude,
-            longitude: params.longitude,
+            latitude: point.lat,
+            longitude: point.lng,
           },
-          radius: params.radiusM,
+          radius: point.radiusM,
         },
       },
     };
@@ -185,32 +270,93 @@ export async function searchPlaces(
     }
 
     for (const item of data.places ?? []) {
-      if (!item.id) continue;
-      const placeId = normalizePlaceId(item.id);
-      places.push({
-        placeId,
-        name: item.displayName?.text ?? "",
-        formattedAddress: item.formattedAddress,
-        latitude: item.location?.latitude,
-        longitude: item.location?.longitude,
-        rating: item.rating,
-        userRatingCount: item.userRatingCount,
-        businessStatus: item.businessStatus,
-        primaryType: item.primaryType,
-        category: item.primaryTypeDisplayName?.text,
-        googleMapsUri: item.googleMapsUri,
-      });
+      const mapped = mapSearchItem(item);
+      if (mapped) places.push(mapped);
+      if (places.length >= maxPerPoint) break;
     }
 
     pageToken = data.nextPageToken;
-    if (pageToken && places.length < 60) {
+    if (pageToken && places.length < maxPerPoint) {
       await new Promise((r) => setTimeout(r, 300));
     } else {
       pageToken = undefined;
     }
-  } while (pageToken && places.length < 60);
+  } while (pageToken && places.length < maxPerPoint);
 
   return places;
+}
+
+export type SearchPlacesMultiPointParams = {
+  query: string;
+  center: { lat: number; lng: number };
+  excludedPlaceIds: Set<string>;
+  maxResults?: number;
+};
+
+export async function searchPlacesMultiPoint(
+  params: SearchPlacesMultiPointParams
+): Promise<TextSearchPlace[]> {
+  const maxResults = params.maxResults ?? MAX_RESULTS;
+  const searchPoints = generateCircularSearchPoints(params.center);
+  const results: TextSearchPlace[] = [];
+  const seenPlaceIds = new Set<string>();
+
+  for (const point of searchPoints) {
+    if (results.length >= maxResults) break;
+
+    const remaining = maxResults - results.length;
+    const batch = await searchPlacesAtPoint(params.query, point, remaining);
+
+    for (const place of batch) {
+      const pid = place.placeId;
+      if (
+        !pid ||
+        seenPlaceIds.has(pid) ||
+        params.excludedPlaceIds.has(pid)
+      ) {
+        continue;
+      }
+      seenPlaceIds.add(pid);
+      results.push(place);
+      if (results.length >= maxResults) break;
+    }
+  }
+
+  return results;
+}
+
+/** @deprecated 単一点検索（互換用） */
+export type SearchPlacesParams = {
+  query: string;
+  latitude: number;
+  longitude: number;
+  radiusM: number;
+};
+
+export async function searchPlaces(
+  params: SearchPlacesParams
+): Promise<TextSearchPlace[]> {
+  return searchPlacesAtPoint(
+    params.query,
+    {
+      lat: params.latitude,
+      lng: params.longitude,
+      radiusM: params.radiusM,
+    },
+    60
+  );
+}
+
+export function buildSearchQuery(
+  keyword1: string,
+  keyword2: string | undefined,
+  prefecture: string
+): string {
+  const parts = [keyword1.trim()];
+  const k2 = keyword2?.trim();
+  if (k2) parts.push(k2);
+  parts.push(prefecture.trim());
+  return parts.join(" ");
 }
 
 export type PlaceDetails = {
