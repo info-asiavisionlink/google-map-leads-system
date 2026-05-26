@@ -92,7 +92,7 @@ export function createSpiralSearcher(params: {
   let turnsCompleted = 0;
 
   let pointPageToken: string | undefined;
-  /** 中心からの最大距離を超えたときのみ true */
+  /** 中心から maxExplorationRadiusKm を超えたときのみ true（空地点・重複では true にしない） */
   let regionFullyScanned = false;
 
   function currentSearchPoint(): SearchPoint {
@@ -148,21 +148,33 @@ export function createSpiralSearcher(params: {
     }
   }
 
+  /**
+   * 最大 maxCount 件まで候補を返す。
+   * 1回の呼び出しでは「現在地点のページネーション」または「次の1スパイラル地点」まで。
+   * 全域を一度に走査して exhausted にしない（200件到達まで route 側が繰り返す）。
+   */
   async function fetchNextBatch(
     maxCount: number,
     runtimeExcluded: Set<string>
   ): Promise<TextSearchPlace[]> {
+    if (regionFullyScanned || maxCount <= 0) {
+      return [];
+    }
+
     const batch: TextSearchPlace[] = [];
 
-    while (batch.length < maxCount && !regionFullyScanned) {
+    while (batch.length < maxCount) {
       if (isBeyondExplorationRange()) {
         regionFullyScanned = true;
         break;
       }
 
-      const point = currentSearchPoint();
       const { places: pagePlaces, nextPageToken } =
-        await searchPlacesAtPointPage(params.query, point, pointPageToken);
+        await searchPlacesAtPointPage(
+          params.query,
+          currentSearchPoint(),
+          pointPageToken
+        );
 
       for (const place of pagePlaces) {
         const pid = place.placeId;
@@ -197,8 +209,9 @@ export function createSpiralSearcher(params: {
 
       if (isBeyondExplorationRange()) {
         regionFullyScanned = true;
-        break;
       }
+
+      break;
     }
 
     return batch.slice(0, maxCount);

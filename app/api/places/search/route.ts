@@ -66,8 +66,8 @@ const BATCH_SIZE = SEARCH_BATCH_SIZE;
 /** 長時間の検索ループ用（デプロイ環境の上限に合わせて調整） */
 export const maxDuration = 300;
 
-/** ループ停止の安全マージン（maxDuration 300秒の手前） */
-const TIMEOUT_NEAR_LIMIT_MS = 285_000;
+/** ループ停止の安全マージン（Vercel 300秒上限の手前・270秒超） */
+const TIMEOUT_NEAR_LIMIT_MS = 270_000;
 
 type SearchBody = SearchAuthBody & {
   area?: string;
@@ -148,23 +148,15 @@ function logSearchComplete(meta: {
   spiralDistanceKm: number;
   stopReason: SearchStopReason;
 }): void {
-  const payload = {
+  if (process.env.NODE_ENV === "production") return;
+
+  console.log({
     totalSaved: meta.totalSaved,
-    targetResults: TARGET_RESULTS,
     currentStep: meta.currentStep,
     currentDirection: meta.currentDirection,
     spiralDistanceKm: meta.spiralDistanceKm,
     stopReason: meta.stopReason,
-    stoppedBeforeTarget: meta.totalSaved < TARGET_RESULTS,
-  };
-
-  console.log("[search-complete]", payload);
-
-  if (meta.totalSaved < TARGET_RESULTS) {
-    console.warn(
-      `[search-complete] 目標${TARGET_RESULTS}件未達で終了 stopReason=${meta.stopReason} totalSaved=${meta.totalSaved}`
-    );
-  }
+  });
 }
 
 function buildSuccessMessage(params: {
@@ -440,6 +432,17 @@ export async function POST(request: NextRequest) {
 
       savedResults.push(...batchResults);
 
+      await upsertSearchProgress(supabase, {
+        userId,
+        area: prefecture,
+        keyword1,
+        keyword2,
+        position: searcher.getPosition(),
+        totalSavedCount: lifetimeSavedBaseline + savedResults.length,
+        isExhausted: false,
+        progressId: activeProgressId,
+      });
+
       logSearchLoop({
         saved: resultRows.length,
         total_saved: savedResults.length,
@@ -471,7 +474,8 @@ export async function POST(request: NextRequest) {
       stopReason: stopReason ?? "prefecture_fully_scanned",
     });
 
-    const isRegionExhausted = searcher.isExhausted();
+    const isRegionExhausted =
+      stopReason === "prefecture_fully_scanned" && searcher.isExhausted();
 
     await upsertSearchProgress(supabase, {
       userId,
