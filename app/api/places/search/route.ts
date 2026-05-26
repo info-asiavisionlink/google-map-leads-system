@@ -4,8 +4,8 @@ import {
   API_ERROR_MESSAGE,
   calculateCreditCost,
   CREDIT_CONSUME_FAILED_MESSAGE,
+  EXHAUSTED_NO_NEW_RESULTS_MESSAGE,
   INSUFFICIENT_CREDIT_MESSAGE,
-  LEGACY_RADIUS_M,
   MAX_RESULTS,
   MIN_CREDIT_TO_SEARCH,
   NO_RESULTS_FOUND_MESSAGE,
@@ -20,17 +20,23 @@ import {
 } from "@/lib/dashboardCredits";
 import {
   buildSearchQuery,
-  createIncrementalPlacesSearcher,
   geocodePrefecture,
   getPlaceDetails,
   toPlaceSearchResult,
 } from "@/lib/googleMaps";
+import { getMaxSearchRadiusKm } from "@/lib/prefectureSearchRadius";
 import { PREFECTURES } from "@/lib/prefectures";
+import { createProgressRingSearcher } from "@/lib/progressRingSearch";
 import {
   extractSearchUserId,
   resolveSearchAuthContext,
   type SearchAuthBody,
 } from "@/lib/searchAuth";
+import {
+  loadSearchProgressRecord,
+  progressRowToPosition,
+  upsertSearchProgress,
+} from "@/lib/searchProgress";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import {
   completeSearchRequest,
@@ -90,7 +96,8 @@ async function getExcludedPlaceIds(userId: string): Promise<Set<string>> {
 
 async function markSearchRequestFailed(
   searchRequestId: string,
-  resultCount: number
+  resultCount: number,
+  params?: { latitude?: number; longitude?: number; radiusM?: number }
 ): Promise<void> {
   const supabase = getSupabaseAdmin();
   await supabase
@@ -98,6 +105,9 @@ async function markSearchRequestFailed(
     .update({
       status: "failed",
       result_count: resultCount,
+      ...(params?.latitude != null ? { latitude: params.latitude } : {}),
+      ...(params?.longitude != null ? { longitude: params.longitude } : {}),
+      ...(params?.radiusM != null ? { radius_m: params.radiusM } : {}),
     })
     .eq("id", searchRequestId);
 }
@@ -107,6 +117,7 @@ function logSearchLoop(meta: {
   saved: number;
   duplicates: number;
   total_saved: number;
+  radius_km: number;
 }): void {
   if (process.env.NODE_ENV === "production") return;
   console.log("[search-loop]", meta);
@@ -115,16 +126,20 @@ function logSearchLoop(meta: {
 function buildSuccessMessage(params: {
   fetchedCount: number;
   savedCount: number;
-  saveFailedCount: number;
+  duplicateExclusionCount: number;
   creditConsumed: number;
   creditAfter: number;
+  currentSearchLocation: string;
+  nextResumeLocation: string;
 }): string {
   return [
     `取得件数: ${params.fetchedCount}件`,
-    `保存成功: ${params.savedCount}件`,
-    `保存失敗: ${params.saveFailedCount}件`,
+    `新規保存: ${params.savedCount}件`,
+    `重複除外: ${params.duplicateExclusionCount}件`,
     `消費クレジット: ${params.creditConsumed}`,
     `残クレジット: ${params.creditAfter.toLocaleString("ja-JP")}`,
+    `現在検索地点: ${params.currentSearchLocation}`,
+    `次回再開地点: ${params.nextResumeLocation}`,
   ].join(" / ");
 }
 
@@ -178,14 +193,32 @@ export async function POST(request: NextRequest) {
   const authContext = resolveSearchAuthContext(userId, body.current_credit);
   const currentCredit = authContext.currentCredit;
 
-  authDebugInfo("api-places-search", {
-    user_id: userId,
-    current_credit: currentCredit,
-  });
-
   const prefecture = resolvePrefecture(body);
   const keyword1 = body.keyword1!.trim();
   const keyword2 = body.keyword2?.trim() || null;
+
+  const supabase = getSupabaseAdmin();
+  const progressRecord = await loadSearchProgressRecord(supabase, {
+    userId,
+    area: prefecture,
+    keyword1,
+    keyword2,
+  });
+
+  if (progressRecord?.is_exhausted) {
+    return jsonResponse({
+      status: "no_results",
+      message: EXHAUSTED_NO_NEW_RESULTS_MESSAGE,
+      results: [],
+      copyText: "",
+      credit: currentCredit,
+      fetchedCount: 0,
+      savedCount: 0,
+      saveFailedCount: 0,
+      duplicateExclusionCount: 0,
+      creditConsumed: 0,
+    });
+  }
 
   if (!hasEnoughCredit(currentCredit, MIN_CREDIT_TO_SEARCH)) {
     return jsonResponse(
@@ -201,10 +234,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const supabase = getSupabaseAdmin();
   let searchRequestId: string | null = null;
 
   try {
+    const center = await geocodePrefecture(prefecture);
+    const maxRadiusKm = getMaxSearchRadiusKm(prefecture);
+    const startPosition = progressRowToPosition(progressRecord, center);
+
     const { data: pendingRequest, error: pendingError } = await supabase
       .from("search_requests")
       .insert({
@@ -212,7 +248,9 @@ export async function POST(request: NextRequest) {
         area: prefecture,
         keyword1,
         keyword2,
-        radius_m: LEGACY_RADIUS_M,
+        radius_m: startPosition.currentRadiusKm * 1000,
+        latitude: startPosition.lastLatitude,
+        longitude: startPosition.lastLongitude,
         status: "pending",
         result_count: 0,
       })
@@ -232,25 +270,28 @@ export async function POST(request: NextRequest) {
     searchRequestId = pendingRequest.id as string;
     const requestId = searchRequestId;
 
-    const center = await geocodePrefecture(prefecture);
     const query = buildSearchQuery(keyword1, keyword2 ?? undefined, prefecture);
     const excludedPlaceIds = await getExcludedPlaceIds(userId);
     const previouslySavedPlaceIds =
       await getPreviouslySavedPlaceIdsForUser(supabase, userId);
-    const previouslySavedPlaceIdCountAtStart = previouslySavedPlaceIds.size;
 
     const searchExcludedPlaceIds = new Set([
       ...excludedPlaceIds,
       ...previouslySavedPlaceIds,
     ]);
-    const searcher = createIncrementalPlacesSearcher({
+
+    const searcher = createProgressRingSearcher({
       query,
       center,
+      maxRadiusKm,
+      startPosition,
       excludedPlaceIds: searchExcludedPlaceIds,
     });
 
     const savedResults: PlaceSearchResult[] = [];
     const seenPlaceIds = new Set<string>();
+    let activeProgressId = progressRecord?.id;
+    const lifetimeSavedBaseline = progressRecord?.total_saved_count ?? 0;
     let fetchedCount = 0;
     let duplicateExclusionCount = 0;
     let saveFailedCount = 0;
@@ -279,7 +320,10 @@ export async function POST(request: NextRequest) {
       );
 
       if (batchCandidates.length === 0) {
-        break;
+        if (searcher.isExhausted()) {
+          break;
+        }
+        continue;
       }
 
       fetchedCount += batchCandidates.length;
@@ -308,7 +352,11 @@ export async function POST(request: NextRequest) {
           saved: 0,
           duplicates: batchDuplicates,
           total_saved: savedResults.length,
+          radius_km: searcher.getPosition().currentRadiusKm,
         });
+        if (searcher.isExhausted()) {
+          break;
+        }
         continue;
       }
 
@@ -324,13 +372,6 @@ export async function POST(request: NextRequest) {
         .map((r) => placeSearchResultToRow(r, requestId, userId))
         .filter((row): row is NonNullable<typeof row> => row !== null);
 
-      if (resultRows.length < batchResults.length) {
-        console.warn(
-          "[search-persistence] place_id が無い店舗をスキップ:",
-          batchResults.length - resultRows.length
-        );
-      }
-
       const insertOutcome = await insertSearchResultsBatch(supabase, resultRows);
 
       if (!insertOutcome.ok) {
@@ -341,12 +382,6 @@ export async function POST(request: NextRequest) {
           sampleRow: resultRows[0] ?? null,
           duplicateExclusionCount,
           previouslySavedPlaceIdCount: previouslySavedPlaceIds.size,
-        });
-        logSearchLoop({
-          fetched: batchCandidates.length,
-          saved: 0,
-          duplicates: batchDuplicates,
-          total_saved: savedResults.length,
         });
         break;
       }
@@ -359,33 +394,80 @@ export async function POST(request: NextRequest) {
 
       savedResults.push(...batchResults);
 
+      const positionAfterSave = searcher.getPosition();
+      await upsertSearchProgress(supabase, {
+        userId,
+        area: prefecture,
+        keyword1,
+        keyword2,
+        position: positionAfterSave,
+        totalSavedCount: lifetimeSavedBaseline + savedResults.length,
+        isExhausted: false,
+        progressId: activeProgressId,
+      });
+      if (!activeProgressId) {
+        const reloaded = await loadSearchProgressRecord(supabase, {
+          userId,
+          area: prefecture,
+          keyword1,
+          keyword2,
+        });
+        activeProgressId = reloaded?.id;
+      }
+
       logSearchLoop({
         fetched: batchCandidates.length,
         saved: resultRows.length,
         duplicates: batchDuplicates,
         total_saved: savedResults.length,
+        radius_km: positionAfterSave.currentRadiusKm,
       });
 
       if (savedResults.length >= MAX_RESULTS) {
         break;
       }
+
+      if (searcher.isExhausted()) {
+        break;
+      }
     }
 
-    authDebugInfo("api-places-search", {
-      user_id: userId,
-      previously_saved_place_ids_at_start: previouslySavedPlaceIdCountAtStart,
-      duplicate_exclusion_count: duplicateExclusionCount,
-      newly_saved_count: savedResults.length,
+    const finalPosition = searcher.getPosition();
+    const currentSearchLocation = searcher.getCurrentSearchLocationLabel();
+    const nextResumeLocation = searcher.getNextResumeLocationLabel();
+    const isRegionExhausted =
+      savedResults.length === 0 &&
+      (searcher.isExhausted() ||
+        finalPosition.currentRadiusKm > maxRadiusKm);
+
+    await upsertSearchProgress(supabase, {
+      userId,
+      area: prefecture,
+      keyword1,
+      keyword2,
+      position: finalPosition,
+      totalSavedCount: lifetimeSavedBaseline + savedResults.length,
+      isExhausted: isRegionExhausted,
+      progressId: activeProgressId,
     });
 
+    const requestMeta = {
+      latitude: finalPosition.lastLatitude ?? center.lat,
+      longitude: finalPosition.lastLongitude ?? center.lng,
+      radiusM: finalPosition.currentRadiusKm * 1000,
+    };
+
     if (savedResults.length === 0) {
+      const noResultMessage = isRegionExhausted
+        ? EXHAUSTED_NO_NEW_RESULTS_MESSAGE
+        : NO_RESULTS_FOUND_MESSAGE;
+
       await supabase
         .from("search_requests")
         .update({
-          status: saveFailed ? "failed" : "completed",
+          status: saveFailed ? "failed" : "no_results",
           result_count: 0,
-          latitude: center.lat,
-          longitude: center.lng,
+          ...requestMeta,
         })
         .eq("id", requestId);
 
@@ -400,6 +482,9 @@ export async function POST(request: NextRequest) {
             fetchedCount,
             savedCount: 0,
             saveFailedCount,
+            duplicateExclusionCount,
+            currentSearchLocation,
+            nextResumeLocation,
             code: "save_failed",
           },
           500
@@ -408,15 +493,17 @@ export async function POST(request: NextRequest) {
 
       return jsonResponse({
         status: "no_results",
-        message: NO_RESULTS_FOUND_MESSAGE,
+        message: noResultMessage,
         results: [],
         copyText: "",
         credit: currentCredit,
-        fetchedCount: 0,
+        fetchedCount,
         savedCount: 0,
         saveFailedCount: 0,
-        resultCount: 0,
+        duplicateExclusionCount,
         creditConsumed: 0,
+        currentSearchLocation,
+        nextResumeLocation,
       });
     }
 
@@ -424,7 +511,7 @@ export async function POST(request: NextRequest) {
     const actualCreditCost = calculateCreditCost(savedCount);
 
     if (!hasEnoughCredit(currentCredit, actualCreditCost)) {
-      await markSearchRequestFailed(requestId, savedCount);
+      await markSearchRequestFailed(requestId, savedCount, requestMeta);
       return jsonResponse(
         {
           status: "error",
@@ -435,7 +522,10 @@ export async function POST(request: NextRequest) {
           fetchedCount,
           savedCount,
           saveFailedCount,
+          duplicateExclusionCount,
           resultCount: savedCount,
+          currentSearchLocation,
+          nextResumeLocation,
           code: "insufficient_credit",
         },
         402
@@ -459,7 +549,7 @@ export async function POST(request: NextRequest) {
         { failure: "dashboard_supabase_consume", user_id: userId },
         consumeErr
       );
-      await markSearchRequestFailed(requestId, savedCount);
+      await markSearchRequestFailed(requestId, savedCount, requestMeta);
 
       if (
         consumeErr instanceof DashboardCreditsError &&
@@ -475,7 +565,10 @@ export async function POST(request: NextRequest) {
             fetchedCount,
             savedCount,
             saveFailedCount,
+            duplicateExclusionCount,
             resultCount: savedCount,
+            currentSearchLocation,
+            nextResumeLocation,
             code: "insufficient_credit",
           },
           402
@@ -496,7 +589,10 @@ export async function POST(request: NextRequest) {
           fetchedCount,
           savedCount,
           saveFailedCount,
+          duplicateExclusionCount,
           resultCount: savedCount,
+          currentSearchLocation,
+          nextResumeLocation,
           code: "consume_failed",
         },
         500
@@ -507,7 +603,7 @@ export async function POST(request: NextRequest) {
     const saveWarnings: string[] = [];
 
     if (saveFailed) {
-      await markSearchRequestFailed(requestId, savedCount);
+      await markSearchRequestFailed(requestId, savedCount, requestMeta);
       saveWarnings.push(SAVE_RESULTS_FAILED_MESSAGE);
     } else {
       const newPlaceIds = savedResults.map((r) => r.placeId);
@@ -531,8 +627,9 @@ export async function POST(request: NextRequest) {
 
       const completeError = await completeSearchRequest(supabase, requestId, {
         resultCount: savedCount,
-        latitude: center.lat,
-        longitude: center.lng,
+        latitude: requestMeta.latitude,
+        longitude: requestMeta.longitude,
+        radiusM: requestMeta.radiusM,
       });
 
       if (completeError) {
@@ -543,9 +640,11 @@ export async function POST(request: NextRequest) {
     const message = buildSuccessMessage({
       fetchedCount,
       savedCount,
-      saveFailedCount,
+      duplicateExclusionCount,
       creditConsumed: actualCreditCost,
       creditAfter,
+      currentSearchLocation,
+      nextResumeLocation,
     });
 
     return jsonResponse({
@@ -559,8 +658,11 @@ export async function POST(request: NextRequest) {
       fetchedCount,
       savedCount,
       saveFailedCount,
+      duplicateExclusionCount,
       resultCount: savedCount,
       creditConsumed: actualCreditCost,
+      currentSearchLocation,
+      nextResumeLocation,
       saveWarning: saveWarnings.length > 0 ? saveWarnings.join(" ") : null,
     });
   } catch (err) {

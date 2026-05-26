@@ -53,6 +53,9 @@ export const SAVE_RESULTS_FAILED_MESSAGE =
 
 export const NO_RESULTS_FOUND_MESSAGE = "検索結果が見つかりませんでした。";
 
+export const EXHAUSTED_NO_NEW_RESULTS_MESSAGE =
+  "この条件では新規店舗が見つかりませんでした。";
+
 /** @deprecated NO_RESULTS_FOUND_MESSAGE を使用 */
 export const NO_NEW_RESULTS_MESSAGE = NO_RESULTS_FOUND_MESSAGE;
 

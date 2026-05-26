@@ -64,6 +64,31 @@ create table if not exists excluded_places (
 
 create index if not exists idx_excluded_places_user_id on excluded_places (user_id);
 
+-- 検索進捗（user_id + 都道府県 + キーワード単位で再開位置を保持）
+create table if not exists search_progress (
+  id uuid not null default gen_random_uuid(),
+  user_id text not null,
+  area text not null,
+  keyword1 text not null,
+  keyword2 text null,
+  keyword2_normalized text not null default '',
+  last_latitude double precision null,
+  last_longitude double precision null,
+  center_latitude double precision null,
+  center_longitude double precision null,
+  current_radius_km integer not null default 1,
+  current_angle integer not null default 0,
+  current_ring_index integer not null default 0,
+  total_saved_count integer not null default 0,
+  is_exhausted boolean not null default false,
+  updated_at timestamp with time zone not null default now(),
+  created_at timestamp with time zone not null default now(),
+  constraint search_progress_pkey primary key (id),
+  constraint search_progress_user_query_unique unique (user_id, area, keyword1, keyword2_normalized)
+);
+
+create index if not exists idx_search_progress_user_id on search_progress (user_id);
+
 -- 既存テーブル向けマイグレーション（重複実行可）
 alter table search_results add column if not exists email text;
 alter table search_results add column if not exists international_phone_number text;

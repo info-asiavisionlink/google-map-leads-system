@@ -209,6 +209,7 @@ export async function completeSearchRequest(
     resultCount: number;
     latitude: number | null;
     longitude: number | null;
+    radiusM?: number;
   }
 ): Promise<PostgrestError | null> {
   const { error } = await supabase
@@ -218,6 +219,7 @@ export async function completeSearchRequest(
       result_count: params.resultCount,
       latitude: params.latitude,
       longitude: params.longitude,
+      ...(params.radiusM != null ? { radius_m: params.radiusM } : {}),
     })
     .eq("id", searchRequestId);
 

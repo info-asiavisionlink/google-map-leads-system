@@ -53,7 +53,7 @@ export default function SearchPage() {
   );
   const [lastFetchedCount, setLastFetchedCount] = useState<number | null>(null);
   const [lastSavedCount, setLastSavedCount] = useState<number | null>(null);
-  const [lastSaveFailedCount, setLastSaveFailedCount] = useState<number | null>(
+  const [lastDuplicateCount, setLastDuplicateCount] = useState<number | null>(
     null
   );
   const [lastCreditConsumed, setLastCreditConsumed] = useState<number | null>(
@@ -62,6 +62,12 @@ export default function SearchPage() {
   const [lastRemainingCredit, setLastRemainingCredit] = useState<number | null>(
     null
   );
+  const [lastCurrentLocation, setLastCurrentLocation] = useState<string | null>(
+    null
+  );
+  const [lastNextResumeLocation, setLastNextResumeLocation] = useState<
+    string | null
+  >(null);
 
   const displayCredit = authState?.credit ?? getActiveCredit() ?? null;
 
@@ -96,9 +102,11 @@ export default function SearchPage() {
     setCopyText("");
     setLastFetchedCount(null);
     setLastSavedCount(null);
-    setLastSaveFailedCount(null);
+    setLastDuplicateCount(null);
     setLastCreditConsumed(null);
     setLastRemainingCredit(null);
+    setLastCurrentLocation(null);
+    setLastNextResumeLocation(null);
     setSaveWarning(null);
 
     const requestHeaders: HeadersInit = {
@@ -177,8 +185,10 @@ export default function SearchPage() {
         setSearchError(null);
         setLastFetchedCount(data.fetchedCount ?? 0);
         setLastSavedCount(data.savedCount ?? 0);
-        setLastSaveFailedCount(data.saveFailedCount ?? 0);
+        setLastDuplicateCount(data.duplicateExclusionCount ?? 0);
         setLastCreditConsumed(data.creditConsumed ?? 0);
+        setLastCurrentLocation(data.currentSearchLocation ?? null);
+        setLastNextResumeLocation(data.nextResumeLocation ?? null);
         if (data.credit != null) setLastRemainingCredit(data.credit);
         return;
       }
@@ -188,8 +198,10 @@ export default function SearchPage() {
         setCopyText(data.copyText);
         setLastFetchedCount(data.fetchedCount ?? null);
         setLastSavedCount(data.savedCount ?? data.resultCount ?? data.results.length);
-        setLastSaveFailedCount(data.saveFailedCount ?? 0);
+        setLastDuplicateCount(data.duplicateExclusionCount ?? 0);
         setLastCreditConsumed(data.creditConsumed ?? null);
+        setLastCurrentLocation(data.currentSearchLocation ?? null);
+        setLastNextResumeLocation(data.nextResumeLocation ?? null);
         if (data.credit != null) setLastRemainingCredit(data.credit);
         setSaveWarning(data.saveWarning ?? null);
         setSearchError(null);
@@ -263,12 +275,6 @@ export default function SearchPage() {
         </div>
       )}
 
-      {status === "no_results" && !searchError && (
-        <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          {message || NO_RESULTS_FOUND_MESSAGE}
-        </div>
-      )}
-
       {saveWarning && (
         <div
           role="status"
@@ -278,32 +284,38 @@ export default function SearchPage() {
         </div>
       )}
 
-      {status === "success" && message && (
-        <div className="mt-6 rounded-lg border border-green-200 bg-green-50 px-4 py-4 text-sm text-green-900">
-          <p className="font-medium">{message}</p>
+      {(status === "success" || status === "no_results") && message && (
+        <div
+          className={`mt-6 rounded-lg border px-4 py-4 text-sm ${
+            status === "success"
+              ? "border-green-200 bg-green-50 text-green-900"
+              : "border-amber-200 bg-amber-50 text-amber-900"
+          }`}
+        >
+          <p className="font-medium">{message || NO_RESULTS_FOUND_MESSAGE}</p>
           {(lastFetchedCount != null || lastSavedCount != null) && (
-            <dl className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            <dl className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {lastFetchedCount != null && (
                 <div>
-                  <dt className="text-xs text-green-700">取得件数</dt>
+                  <dt className="text-xs opacity-80">取得件数</dt>
                   <dd className="font-semibold">{lastFetchedCount}件</dd>
                 </div>
               )}
               {lastSavedCount != null && (
                 <div>
-                  <dt className="text-xs text-green-700">保存成功</dt>
+                  <dt className="text-xs opacity-80">新規保存件数</dt>
                   <dd className="font-semibold">{lastSavedCount}件</dd>
                 </div>
               )}
-              {lastSaveFailedCount != null && (
+              {lastDuplicateCount != null && (
                 <div>
-                  <dt className="text-xs text-green-700">保存失敗</dt>
-                  <dd className="font-semibold">{lastSaveFailedCount}件</dd>
+                  <dt className="text-xs opacity-80">重複除外件数</dt>
+                  <dd className="font-semibold">{lastDuplicateCount}件</dd>
                 </div>
               )}
               {lastCreditConsumed != null && (
                 <div>
-                  <dt className="text-xs text-green-700">消費クレジット</dt>
+                  <dt className="text-xs opacity-80">消費クレジット</dt>
                   <dd className="font-semibold">
                     {formatCredit(lastCreditConsumed)}
                   </dd>
@@ -311,10 +323,22 @@ export default function SearchPage() {
               )}
               {lastRemainingCredit != null && (
                 <div>
-                  <dt className="text-xs text-green-700">残クレジット</dt>
+                  <dt className="text-xs opacity-80">残クレジット</dt>
                   <dd className="font-semibold">
                     {formatCredit(lastRemainingCredit)}
                   </dd>
+                </div>
+              )}
+              {lastCurrentLocation && (
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <dt className="text-xs opacity-80">現在検索地点</dt>
+                  <dd className="font-semibold break-all">{lastCurrentLocation}</dd>
+                </div>
+              )}
+              {lastNextResumeLocation && (
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <dt className="text-xs opacity-80">次回再開地点</dt>
+                  <dd className="font-semibold break-all">{lastNextResumeLocation}</dd>
                 </div>
               )}
             </dl>

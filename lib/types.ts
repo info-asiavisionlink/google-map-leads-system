@@ -33,6 +33,9 @@ export type SearchApiResponse = {
   fetchedCount?: number;
   savedCount?: number;
   saveFailedCount?: number;
+  duplicateExclusionCount?: number;
+  currentSearchLocation?: string;
+  nextResumeLocation?: string;
   creditConsumed?: number;
   creditBefore?: number;
   creditAfter?: number;
