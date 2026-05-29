@@ -103,5 +103,7 @@ export type PlaceChatApiResponse = {
   answer?: string;
   credit?: number | null;
   usedWebsite?: boolean;
+  historySaveFailed?: boolean;
+  historySaveWarning?: string;
   code?: "unauthorized" | "insufficient_credit" | "api_error";
 };

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import {
   AI_CHAT_CREDIT_COST,
   AI_CHAT_INSUFFICIENT_CREDIT_MESSAGE,
@@ -31,6 +32,33 @@ function jsonResponse(
   status = 200
 ): NextResponse<PlaceChatApiResponse> {
   return NextResponse.json(body, { status });
+}
+
+function getOpenAiModel(): string {
+  return process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini";
+}
+
+function buildSourceSummary(params: {
+  usedWebsite: boolean;
+  websiteFetchFailed: boolean;
+  hasWebsiteUrl: boolean;
+}): string {
+  if (params.usedWebsite) {
+    return "Googleマップ保存情報 + 公式サイト本文";
+  }
+  if (params.websiteFetchFailed && params.hasWebsiteUrl) {
+    return "Googleマップ保存情報（公式サイト取得失敗）";
+  }
+  return "Googleマップ保存情報";
+}
+
+function buildSourceType(params: {
+  usedWebsite: boolean;
+  hasWebsiteUrl: boolean;
+}): string {
+  if (params.usedWebsite) return "map_and_website";
+  if (params.hasWebsiteUrl) return "map_only_with_website_url";
+  return "map_only";
 }
 
 export async function POST(request: NextRequest) {
@@ -127,6 +155,8 @@ export async function POST(request: NextRequest) {
 
   const place = mapSearchResultRow(placeRow);
   const mapContext = buildPlaceContextText(place);
+  const model = getOpenAiModel();
+  const hasWebsiteUrl = Boolean(place.websiteUrl?.trim());
 
   let websiteText = "";
   let usedWebsite = false;
@@ -191,31 +221,53 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const sourceType = buildSourceType({ usedWebsite, hasWebsiteUrl });
+  const sourceSummary = buildSourceSummary({
+    usedWebsite,
+    websiteFetchFailed,
+    hasWebsiteUrl,
+  });
+
+  const chatInsertRow = {
+    user_id: userId,
+    place_id: placeId,
+    search_result_id: placeRow.id,
+    question,
+    answer,
+    credit_cost: AI_CHAT_CREDIT_COST,
+    source_type: sourceType,
+    used_website: usedWebsite,
+    website_url: place.websiteUrl || null,
+    source_summary: sourceSummary,
+    model,
+    error_message: null,
+  };
+
   const { data: chatRow, error: chatInsertError } = await supabase
     .from("place_ai_chats")
-    .insert({
-      user_id: userId,
-      place_id: placeId,
-      search_result_id: placeRow.id,
-      question,
-      answer,
-      credit_cost: AI_CHAT_CREDIT_COST,
-      used_website: usedWebsite,
-    })
+    .insert(chatInsertRow)
     .select("id")
     .single();
 
+  let historySaveFailed = false;
+  let chatRowId: string | null = null;
+
   if (chatInsertError || !chatRow) {
-    console.error("place_ai_chats 保存エラー:", chatInsertError);
-    return jsonResponse(
-      {
-        status: "error",
-        message: "チャット履歴の保存に失敗しました",
-        code: "api_error",
-      },
-      500
-    );
+    historySaveFailed = true;
+    console.error("place_ai_chats 保存エラー:", {
+      user_id: userId,
+      place_id: placeId,
+      search_result_id: placeRow.id,
+      code: chatInsertError?.code,
+      message: chatInsertError?.message,
+      details: chatInsertError?.details,
+      hint: chatInsertError?.hint,
+    });
+  } else {
+    chatRowId = chatRow.id as string;
   }
+
+  const externalRequestId = chatRowId ?? randomUUID();
 
   let creditAfter = currentCredit;
   try {
@@ -225,12 +277,14 @@ export async function POST(request: NextRequest) {
       toolId: getAiChatToolId(),
       amount: AI_CHAT_CREDIT_COST,
       resultCount: 1,
-      externalRequestId: chatRow.id as string,
+      externalRequestId,
     });
     creditAfter = consumeResult.credit;
   } catch (consumeErr) {
     console.error("AIチャット クレジット消費エラー:", consumeErr);
-    await supabase.from("place_ai_chats").delete().eq("id", chatRow.id);
+    if (chatRowId) {
+      await supabase.from("place_ai_chats").delete().eq("id", chatRowId);
+    }
     const detail =
       consumeErr instanceof DashboardCreditsError
         ? consumeErr.message
@@ -258,5 +312,9 @@ export async function POST(request: NextRequest) {
     answer,
     credit: creditAfter,
     usedWebsite,
+    historySaveFailed: historySaveFailed || undefined,
+    historySaveWarning: historySaveFailed
+      ? "履歴保存のみ失敗しました"
+      : undefined,
   });
 }

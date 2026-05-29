@@ -176,9 +176,24 @@ create table if not exists place_ai_chats (
   question text not null,
   answer text not null,
   credit_cost integer not null default 2,
+  source_type text not null default 'map_only',
   used_website boolean not null default false,
+  website_url text,
+  source_summary text,
+  model text,
+  error_message text,
   created_at timestamp with time zone not null default now()
 );
+
+-- place_ai_chats 不足カラム追記（本番既存テーブル向け）
+alter table place_ai_chats add column if not exists credit_cost integer not null default 2;
+alter table place_ai_chats add column if not exists source_type text not null default 'map_only';
+alter table place_ai_chats add column if not exists used_website boolean not null default false;
+alter table place_ai_chats add column if not exists website_url text;
+alter table place_ai_chats add column if not exists source_summary text;
+alter table place_ai_chats add column if not exists model text;
+alter table place_ai_chats add column if not exists error_message text;
+alter table place_ai_chats add column if not exists created_at timestamp with time zone not null default now();
 
 create index if not exists idx_place_ai_chats_user_id on place_ai_chats (user_id);
 create index if not exists idx_place_ai_chats_place_id on place_ai_chats (place_id);

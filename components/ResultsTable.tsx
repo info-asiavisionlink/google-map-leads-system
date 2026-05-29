@@ -1,7 +1,10 @@
+"use client";
+
 import { OpeningHoursDisplay, ReviewsDisplay } from "@/components/FormattedField";
 import PlaceAiChat from "@/components/PlaceAiChat";
 import { displayOrEmpty } from "@/lib/placeFormat";
 import type { PlaceSearchResult } from "@/lib/types";
+import { Fragment, useState } from "react";
 import ResultCard from "./ResultCard";
 
 type ResultsTableProps = {
@@ -45,7 +48,7 @@ const COLUMNS: { key: string; label: string; minW: string }[] = [
   { key: "category", label: "業種", minW: "min-w-[120px]" },
   { key: "status", label: "ステータス", minW: "min-w-[88px]" },
   { key: "placeId", label: "place_id", minW: "min-w-[140px]" },
-  { key: "ai", label: "AI", minW: "min-w-[120px]" },
+  { key: "ai", label: "AI", minW: "min-w-[96px]" },
 ];
 
 export default function ResultsTable({
@@ -53,6 +56,13 @@ export default function ResultsTable({
   userId,
   onCreditUpdate,
 }: ResultsTableProps) {
+  const [openChatPlaceId, setOpenChatPlaceId] = useState<string | null>(null);
+
+  const openChatPlace =
+    openChatPlaceId != null
+      ? results.find((row) => row.placeId === openChatPlaceId) ?? null
+      : null;
+
   if (results.length === 0) {
     return null;
   }
@@ -72,7 +82,7 @@ export default function ResultsTable({
       </div>
 
       <div className="hidden min-w-0 md:block">
-        <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+        <div className="overflow-x-auto rounded-t-xl border border-b-0 border-gray-200 bg-white shadow-sm">
           <table className="min-w-[1500px] border-collapse text-left text-sm">
             <thead>
               <tr className="border-b border-gray-200 bg-gray-50">
@@ -88,70 +98,89 @@ export default function ResultsTable({
             </thead>
             <tbody className="divide-y divide-gray-100">
               {results.map((row, index) => (
-                <tr key={row.placeId} className="align-top hover:bg-blue-50/30">
-                  <td className="whitespace-nowrap px-3 py-3 font-medium text-gray-900">
-                    {index + 1}
-                  </td>
-                  <td className="max-w-[180px] break-words px-3 py-3 font-semibold text-gray-900">
-                    {row.name}
-                  </td>
-                  <td className="max-w-[220px] break-words px-3 py-3 text-gray-700">
-                    {displayOrEmpty(row.address)}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-3 text-gray-700">
-                    {displayOrEmpty(row.phoneNumber)}
-                  </td>
-                  <td className="px-3 py-3 text-gray-500">
-                    {displayOrEmpty(row.email)}
-                  </td>
-                  <td className="px-3 py-3">
-                    {row.websiteUrl ? (
-                      <CellLink href={row.websiteUrl} label="開く" />
-                    ) : (
-                      <span className="text-gray-400">-</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-3">
-                    <CellLink href={row.googleMapsUrl} label="地図" />
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-3 text-gray-800">
-                    {row.rating ?? "-"}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-3 text-gray-700">
-                    {row.reviewCount ?? "-"}
-                  </td>
-                  <td className="min-w-[200px] max-w-[260px] break-words px-3 py-3 align-top text-gray-700">
-                    <ReviewsDisplay text={row.reviewsText} />
-                  </td>
-                  <td className="min-w-[200px] max-w-[240px] break-words px-3 py-3 align-top text-gray-700">
-                    <OpeningHoursDisplay text={row.regularOpeningHours} />
-                  </td>
-                  <td className="break-words px-3 py-3 text-gray-700">
-                    {displayOrEmpty(row.closedDays)}
-                  </td>
-                  <td className="break-words px-3 py-3 text-gray-700">
-                    {displayOrEmpty(row.category)}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-3 text-gray-700">
-                    {displayOrEmpty(row.businessStatus)}
-                  </td>
-                  <td className="px-3 py-3">
-                    <code className="block max-w-[140px] break-all font-mono text-xs text-gray-500">
-                      {row.placeId}
-                    </code>
-                  </td>
-                  <td className="min-w-[220px] px-3 py-3">
-                    <PlaceAiChat
-                      place={row}
-                      userId={userId ?? null}
-                      onCreditUpdate={onCreditUpdate}
-                    />
-                  </td>
-                </tr>
+                <Fragment key={row.placeId}>
+                  <tr className="align-top hover:bg-blue-50/30">
+                    <td className="whitespace-nowrap px-3 py-3 font-medium text-gray-900">
+                      {index + 1}
+                    </td>
+                    <td className="max-w-[180px] break-words px-3 py-3 font-semibold text-gray-900">
+                      {row.name}
+                    </td>
+                    <td className="max-w-[220px] break-words px-3 py-3 text-gray-700">
+                      {displayOrEmpty(row.address)}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-3 text-gray-700">
+                      {displayOrEmpty(row.phoneNumber)}
+                    </td>
+                    <td className="px-3 py-3 text-gray-500">
+                      {displayOrEmpty(row.email)}
+                    </td>
+                    <td className="px-3 py-3">
+                      {row.websiteUrl ? (
+                        <CellLink href={row.websiteUrl} label="開く" />
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      <CellLink href={row.googleMapsUrl} label="地図" />
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-3 text-gray-800">
+                      {row.rating ?? "-"}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-3 text-gray-700">
+                      {row.reviewCount ?? "-"}
+                    </td>
+                    <td className="min-w-[200px] max-w-[260px] break-words px-3 py-3 align-top text-gray-700">
+                      <ReviewsDisplay text={row.reviewsText} />
+                    </td>
+                    <td className="min-w-[200px] max-w-[240px] break-words px-3 py-3 align-top text-gray-700">
+                      <OpeningHoursDisplay text={row.regularOpeningHours} />
+                    </td>
+                    <td className="break-words px-3 py-3 text-gray-700">
+                      {displayOrEmpty(row.closedDays)}
+                    </td>
+                    <td className="break-words px-3 py-3 text-gray-700">
+                      {displayOrEmpty(row.category)}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-3 text-gray-700">
+                      {displayOrEmpty(row.businessStatus)}
+                    </td>
+                    <td className="px-3 py-3">
+                      <code className="block max-w-[140px] break-all font-mono text-xs text-gray-500">
+                        {row.placeId}
+                      </code>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-3">
+                      <PlaceAiChat
+                        place={row}
+                        userId={userId ?? null}
+                        triggerOnly
+                        onOpenRequest={() =>
+                          setOpenChatPlaceId((current) =>
+                            current === row.placeId ? null : row.placeId
+                          )
+                        }
+                      />
+                    </td>
+                  </tr>
+                </Fragment>
               ))}
             </tbody>
           </table>
         </div>
+
+        {openChatPlace && (
+          <div className="w-full min-w-0 max-w-full rounded-b-xl border border-t-0 border-blue-200 bg-white p-4 shadow-sm sm:p-5">
+            <PlaceAiChat
+              place={openChatPlace}
+              userId={userId ?? null}
+              panelOnly
+              onClose={() => setOpenChatPlaceId(null)}
+              onCreditUpdate={onCreditUpdate}
+            />
+          </div>
+        )}
       </div>
     </>
   );
