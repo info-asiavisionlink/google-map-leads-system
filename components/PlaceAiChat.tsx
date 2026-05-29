@@ -121,7 +121,7 @@ export default function PlaceAiChat({
       <button
         type="button"
         onClick={handleOpen}
-        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-lg border border-blue-200 bg-blue-50 px-3 text-sm font-semibold text-blue-800 transition hover:bg-blue-100"
+        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-lg border border-blue-200 bg-blue-50 px-4 text-sm font-semibold text-blue-800 transition hover:bg-blue-100"
       >
         AIに質問
       </button>
@@ -130,7 +130,7 @@ export default function PlaceAiChat({
 
   if (!isOpen) {
     return (
-      <div className="w-full min-w-0 max-w-full">
+      <div className="mx-auto w-full min-w-0 max-w-5xl">
         <button
           type="button"
           onClick={handleOpen}
@@ -144,12 +144,12 @@ export default function PlaceAiChat({
 
   return (
     <div
-      className={`w-full min-w-0 max-w-full overflow-hidden ${
+      className={`mx-auto w-full min-w-0 max-w-5xl ${
         panelOnly ? "" : "mt-6 border-t border-blue-100 pt-5"
       }`}
     >
-      <div className="w-full min-w-0 max-w-full overflow-hidden rounded-2xl border-2 border-blue-200 bg-gradient-to-br from-white to-blue-50/70 p-5 shadow-md sm:p-6">
-        <div className="mb-5 flex min-w-0 items-start justify-between gap-3">
+      <div className="w-full overflow-hidden rounded-2xl border-2 border-blue-200 bg-gradient-to-br from-white to-blue-50/70 p-6 shadow-md sm:p-6">
+        <div className="mb-6 flex min-w-0 items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">
               AIアシスタント
@@ -173,11 +173,11 @@ export default function PlaceAiChat({
           </button>
         </div>
 
-        <p className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-base font-medium text-amber-900">
+        <p className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-base font-medium text-amber-900">
           1回の質問で {AI_CHAT_CREDIT_COST} クレジット消費します
         </p>
 
-        <div className="grid min-w-0 gap-5 lg:grid-cols-2 lg:gap-6">
+        <div className="grid min-w-0 grid-cols-1 gap-5 lg:grid-cols-2 lg:gap-6">
           <div className="min-w-0">
             <form onSubmit={handleSubmit} className="space-y-4">
               <label className="block w-full min-w-0">
@@ -188,7 +188,7 @@ export default function PlaceAiChat({
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="例）どんな店？ / おすすめは？"
-                  className="min-h-[120px] w-full min-w-0 max-w-full resize-y rounded-xl border-2 border-gray-200 px-4 py-3 text-base leading-relaxed break-words focus:border-blue-400 focus:outline-none focus:ring-4 focus:ring-blue-100"
+                  className="min-h-[120px] w-full min-w-0 resize-y rounded-xl border-2 border-gray-200 px-4 py-3 text-base leading-relaxed break-words focus:border-blue-400 focus:outline-none focus:ring-4 focus:ring-blue-100"
                   disabled={isLoading}
                 />
               </label>
@@ -229,8 +229,8 @@ export default function PlaceAiChat({
             )}
           </div>
 
-          <div className="min-w-0">
-            <div className="min-h-[180px] w-full min-w-0 max-w-full overflow-hidden rounded-xl border-2 border-blue-100 bg-white p-5 sm:p-6">
+          <div className="min-w-0 lg:min-w-[420px]">
+            <div className="min-h-[180px] w-full overflow-hidden rounded-xl border-2 border-blue-100 bg-white p-6">
               <p className="mb-3 text-base font-bold text-blue-700">AI回答</p>
               {answer ? (
                 <p className="whitespace-pre-wrap break-words text-base leading-relaxed text-gray-800">
