@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 type ResultCardProps = {
   row: PlaceSearchResult;
   index: number;
-  accessToken?: string | null;
+  userId?: string | null;
   onCreditUpdate?: (credit: number) => void;
 };
 
@@ -53,7 +53,7 @@ function Field({
 export default function ResultCard({
   row,
   index,
-  accessToken,
+  userId,
   onCreditUpdate,
 }: ResultCardProps) {
   return (
@@ -108,7 +108,7 @@ export default function ResultCard({
 
       <PlaceAiChat
         place={row}
-        accessToken={accessToken ?? null}
+        userId={userId ?? null}
         onCreditUpdate={onCreditUpdate}
       />
     </article>

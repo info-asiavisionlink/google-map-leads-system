@@ -6,7 +6,7 @@ import ResultCard from "./ResultCard";
 
 type ResultsTableProps = {
   results: PlaceSearchResult[];
-  accessToken?: string | null;
+  userId?: string | null;
   onCreditUpdate?: (credit: number) => void;
 };
 
@@ -50,7 +50,7 @@ const COLUMNS: { key: string; label: string; minW: string }[] = [
 
 export default function ResultsTable({
   results,
-  accessToken,
+  userId,
   onCreditUpdate,
 }: ResultsTableProps) {
   if (results.length === 0) {
@@ -65,7 +65,7 @@ export default function ResultsTable({
             key={row.placeId}
             row={row}
             index={index}
-            accessToken={accessToken}
+            userId={userId}
             onCreditUpdate={onCreditUpdate}
           />
         ))}
@@ -143,7 +143,7 @@ export default function ResultsTable({
                   <td className="min-w-[220px] px-3 py-3">
                     <PlaceAiChat
                       place={row}
-                      accessToken={accessToken ?? null}
+                      userId={userId ?? null}
                       onCreditUpdate={onCreditUpdate}
                     />
                   </td>

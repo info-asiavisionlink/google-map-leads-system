@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { TOKEN_AUTH_EXPIRED_MESSAGE } from "@/lib/constants";
 import {
-  DashboardCreditsError,
-  getAccessTokenFromRequest,
-  verifyToolAccessToken,
-} from "@/lib/dashboardCredits";
+  calculateCreditCost,
+  USER_INFO_MISSING_MESSAGE,
+} from "@/lib/constants";
+import { getDashboardUserCredit } from "@/lib/dashboardCredits";
 import { mapSearchResultRow } from "@/lib/searchResults";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { buildTsv } from "@/lib/tsv";
@@ -14,32 +13,22 @@ type RouteContext = {
   params: Promise<{ jobId: string }>;
 };
 
+function extractUserId(request: NextRequest): string | null {
+  const headerUserId = request.headers.get("x-user-id")?.trim();
+  return headerUserId || null;
+}
+
 export async function GET(request: NextRequest, context: RouteContext) {
   const { jobId } = await context.params;
 
-  const accessToken = getAccessTokenFromRequest(request);
-  if (!accessToken) {
+  const userId = extractUserId(request);
+  if (!userId) {
     return NextResponse.json(
-      { error: TOKEN_AUTH_EXPIRED_MESSAGE },
+      { error: USER_INFO_MISSING_MESSAGE },
       { status: 401 }
     );
   }
 
-  let verifyResult;
-  try {
-    verifyResult = await verifyToolAccessToken(accessToken);
-  } catch (err) {
-    const message =
-      err instanceof DashboardCreditsError
-        ? err.message
-        : TOKEN_AUTH_EXPIRED_MESSAGE;
-    return NextResponse.json(
-      { error: message },
-      { status: err instanceof DashboardCreditsError ? err.status : 401 }
-    );
-  }
-
-  const userId = verifyResult.user.id;
   const supabase = getSupabaseAdmin();
 
   const { data: job, error: jobError } = await supabase
@@ -72,13 +61,32 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
   const status = job.status as SearchJobResponse["status"];
   const savedCount = (job.saved_count as number) ?? results.length;
-  const creditCost = verifyResult.tool.credit_cost;
+
+  let creditAfter: number | null = null;
+  if (status === "completed") {
+    try {
+      creditAfter = await getDashboardUserCredit(userId);
+    } catch {
+      creditAfter = null;
+    }
+  }
+
+  const creditConsumed =
+    status === "completed" ? calculateCreditCost(savedCount) : 0;
 
   let message: string | undefined;
   if (status === "completed") {
-    message = `${savedCount}件の営業リストを作成しました（${creditCost} Credit消費）`;
+    message = [
+      `取得件数: ${savedCount}件`,
+      `消費クレジット: ${creditConsumed}`,
+      creditAfter != null
+        ? `残クレジット: ${creditAfter.toLocaleString("ja-JP")}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" / ");
   } else if (status === "no_results") {
-    message = "この検索範囲では新しい検索結果がありません。";
+    message = "この条件では新規店舗が見つかりませんでした。";
   } else if (status === "failed") {
     message = (job.error_message as string) ?? "検索中にエラーが発生しました";
   }
@@ -94,6 +102,8 @@ export async function GET(request: NextRequest, context: RouteContext) {
     results,
     copyText: buildTsv(results),
     message,
+    credit: creditAfter,
+    creditConsumed,
     errorMessage: (job.error_message as string) ?? undefined,
   };
 

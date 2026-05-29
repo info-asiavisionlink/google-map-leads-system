@@ -22,6 +22,14 @@ export type PlaceSearchResult = {
   photoNames: string;
 };
 
+export type SearchStopReason =
+  | "reached_target"
+  | "prefecture_fully_scanned"
+  | "timeout_near_limit"
+  | "google_api_error"
+  | "save_error"
+  | "credit_shortage";
+
 export type SearchJobStatus =
   | "pending"
   | "processing"
@@ -46,6 +54,7 @@ export type SearchJobResponse = {
   copyText: string;
   message?: string;
   credit?: number | null;
+  creditConsumed?: number;
   errorMessage?: string;
 };
 
@@ -64,6 +73,15 @@ export type SearchApiResponse = {
   copyText: string;
   credit?: number | null;
   jobId?: string;
+  resultCount?: number;
+  fetchedCount?: number;
+  savedCount?: number;
+  saveFailedCount?: number;
+  duplicateExclusionCount?: number;
+  creditConsumed?: number;
+  creditBefore?: number;
+  creditAfter?: number;
+  saveWarning?: string | null;
   code?:
     | "unauthorized"
     | "insufficient_credit"

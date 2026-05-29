@@ -1,29 +1,26 @@
 import { after, NextRequest, NextResponse } from "next/server";
+import { authDebugError, authDebugInfo } from "@/lib/authDebug";
 import {
+  EXHAUSTED_NO_NEW_RESULTS_MESSAGE,
   INSUFFICIENT_CREDIT_MESSAGE,
-  MAX_RESULTS,
-  RADIUS_OPTIONS,
-  TOKEN_AUTH_EXPIRED_MESSAGE,
+  MIN_CREDIT_TO_SEARCH,
+  SEARCH_TARGET_RESULTS,
+  USER_INFO_MISSING_MESSAGE,
 } from "@/lib/constants";
-import {
-  DashboardCreditsError,
-  hasEnoughCredit,
-} from "@/lib/dashboardCredits";
+import { hasEnoughCredit } from "@/lib/dashboardCredits";
+import { PREFECTURES } from "@/lib/prefectures";
 import { processSearchJob } from "@/lib/searchProcessor";
+import {
+  extractSearchUserId,
+  resolveSearchAuthContext,
+  type SearchAuthBody,
+} from "@/lib/searchAuth";
+import { loadSearchProgressRecord } from "@/lib/searchProgress";
+import { FIXED_SEARCH_RADIUS_M } from "@/lib/spiralSearch";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import type { SearchApiResponse, SearchStartResponse } from "@/lib/types";
 
-/** 1回の検索ボタンで目指す新規保存件数（100件で止めない・必ず200を目標） */
-const TARGET_RESULTS = SEARCH_TARGET_RESULTS;
-
-/** 内部バッチサイズ（レスポンスはループ完了後にまとめて返す） */
-const BATCH_SIZE = SEARCH_BATCH_SIZE;
-
-/** 長時間の検索ループ用（デプロイ環境の上限に合わせて調整） */
 export const maxDuration = 300;
-
-/** ループ停止の安全マージン（Vercel 300秒上限の手前・270秒超） */
-const TIMEOUT_NEAR_LIMIT_MS = 270_000;
 
 type SearchBody = SearchAuthBody & {
   area?: string;
@@ -49,6 +46,10 @@ function validateBody(body: SearchBody): string | null {
   }
   if (!keyword1) return "大カテゴリー・業種を入力してください";
   return null;
+}
+
+function resolvePrefecture(body: SearchBody): string {
+  return (body.area?.trim() || body.prefecture?.trim()) as string;
 }
 
 export async function POST(request: NextRequest) {
@@ -122,8 +123,6 @@ export async function POST(request: NextRequest) {
       credit: currentCredit,
       fetchedCount: 0,
       savedCount: 0,
-      saveFailedCount: 0,
-      duplicateExclusionCount: 0,
       creditConsumed: 0,
     });
   }
@@ -142,16 +141,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let searchRequestId: string | null = null;
-
   const { data: searchRequest, error: requestInsertError } = await supabase
     .from("search_requests")
     .insert({
       user_id: userId,
-      area,
+      area: prefecture,
       keyword1,
       keyword2,
-      radius_m: radiusM,
+      radius_m: FIXED_SEARCH_RADIUS_M,
       result_count: 0,
       status: "pending",
     })
@@ -179,17 +176,16 @@ export async function POST(request: NextRequest) {
     .insert({
       user_id: userId,
       search_request_id: searchRequestId,
-      area,
+      area: prefecture,
       keyword1,
       keyword2,
-      radius_m: radiusM,
+      radius_m: FIXED_SEARCH_RADIUS_M,
       status: "pending",
       current_step: "scanning",
       fetched_count: 0,
       saved_count: 0,
-      target_count: MAX_RESULTS,
-      access_token: accessToken,
-      credit_cost: creditCost,
+      target_count: SEARCH_TARGET_RESULTS,
+      credit_cost: 0,
     })
     .select("id")
     .single();
@@ -214,17 +210,10 @@ export async function POST(request: NextRequest) {
     await processSearchJob(jobId);
   });
 
-  const response: SearchStartResponse = {
-    jobId,
-    searchRequestId,
-    status: "processing",
-    message: "検索を開始しました。店舗情報を取得しています…",
-  };
-
   return jsonResponse(
     {
       status: "processing",
-      message: response.message,
+      message: "検索を開始しました。店舗情報を取得しています…",
       results: [],
       copyText: "",
       jobId,

@@ -2,24 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   AI_CHAT_CREDIT_COST,
   AI_CHAT_INSUFFICIENT_CREDIT_MESSAGE,
-  TOKEN_AUTH_EXPIRED_MESSAGE,
+  USER_INFO_MISSING_MESSAGE,
   WEBSITE_CACHE_TTL_MS,
 } from "@/lib/constants";
 import {
   consumeDashboardCredits,
   DashboardCreditsError,
-  getAccessTokenFromRequest,
+  getDashboardUserCredit,
   getAiChatToolKey,
   hasEnoughCredit,
-  verifyToolAccessToken,
 } from "@/lib/dashboardCredits";
 import { fetchWebsiteText } from "@/lib/fetchWebsiteText";
 import { generatePlaceAnswer } from "@/lib/openai";
 import { buildPlaceContextText, mapSearchResultRow } from "@/lib/searchResults";
+import { extractSearchUserId } from "@/lib/searchAuth";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import type { PlaceChatApiResponse } from "@/lib/types";
 
 type ChatBody = {
+  user_id?: string;
   place_id?: string;
   question?: string;
 };
@@ -60,26 +61,26 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const accessToken = getAccessTokenFromRequest(request);
-  if (!accessToken) {
+  const userId = extractSearchUserId(request, body);
+  if (!userId) {
     return jsonResponse(
       {
         status: "error",
-        message: TOKEN_AUTH_EXPIRED_MESSAGE,
+        message: USER_INFO_MISSING_MESSAGE,
         code: "unauthorized",
       },
       401
     );
   }
 
-  let verifyResult;
+  let currentCredit: number;
   try {
-    verifyResult = await verifyToolAccessToken(accessToken);
+    currentCredit = await getDashboardUserCredit(userId);
   } catch (err) {
     const message =
       err instanceof DashboardCreditsError
         ? err.message
-        : TOKEN_AUTH_EXPIRED_MESSAGE;
+        : "クレジット残高の取得に失敗しました";
     return jsonResponse(
       {
         status: "error",
@@ -89,9 +90,6 @@ export async function POST(request: NextRequest) {
       err instanceof DashboardCreditsError ? err.status : 401
     );
   }
-
-  const userId = verifyResult.user.id;
-  const currentCredit = verifyResult.credit;
 
   if (!hasEnoughCredit(currentCredit, AI_CHAT_CREDIT_COST)) {
     return jsonResponse(
@@ -220,11 +218,13 @@ export async function POST(request: NextRequest) {
 
   let creditAfter = currentCredit;
   try {
-    const consumeResult = await consumeDashboardCredits(
-      accessToken,
-      chatRow.id as string,
-      getAiChatToolKey()
-    );
+    const consumeResult = await consumeDashboardCredits({
+      userId,
+      toolKey: getAiChatToolKey(),
+      amount: AI_CHAT_CREDIT_COST,
+      resultCount: 1,
+      externalRequestId: chatRow.id as string,
+    });
     creditAfter = consumeResult.credit;
   } catch (consumeErr) {
     console.error("AIチャット クレジット消費エラー:", consumeErr);

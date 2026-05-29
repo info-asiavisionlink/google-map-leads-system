@@ -3,21 +3,20 @@
 import {
   AI_CHAT_CREDIT_COST,
   AI_CHAT_INSUFFICIENT_CREDIT_MESSAGE,
-  TOKEN_AUTH_EXPIRED_MESSAGE,
+  USER_INFO_MISSING_MESSAGE,
 } from "@/lib/constants";
-import { clearStoredAccessToken } from "@/lib/toolToken";
 import type { PlaceChatApiResponse, PlaceSearchResult } from "@/lib/types";
 import { FormEvent, useState } from "react";
 
 type PlaceAiChatProps = {
   place: PlaceSearchResult;
-  accessToken: string | null;
+  userId: string | null;
   onCreditUpdate?: (credit: number) => void;
 };
 
 export default function PlaceAiChat({
   place,
-  accessToken,
+  userId,
   onCreditUpdate,
 }: PlaceAiChatProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -31,8 +30,8 @@ export default function PlaceAiChat({
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!accessToken) {
-      setError(TOKEN_AUTH_EXPIRED_MESSAGE);
+    if (!userId) {
+      setError(USER_INFO_MISSING_MESSAGE);
       return;
     }
 
@@ -48,10 +47,11 @@ export default function PlaceAiChat({
       const res = await fetch("/api/places/chat", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
+          "x-user-id": userId,
         },
         body: JSON.stringify({
+          user_id: userId,
           place_id: place.placeId,
           question: trimmed,
         }),
@@ -60,8 +60,7 @@ export default function PlaceAiChat({
       const data = (await res.json()) as PlaceChatApiResponse;
 
       if (res.status === 401 || data.code === "unauthorized") {
-        clearStoredAccessToken();
-        setError(TOKEN_AUTH_EXPIRED_MESSAGE);
+        setError(USER_INFO_MISSING_MESSAGE);
         return;
       }
 

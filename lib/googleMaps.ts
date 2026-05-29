@@ -1,4 +1,4 @@
-import { MAX_CANDIDATE_PLACES } from "@/lib/constants";
+import { SEARCH_TARGET_RESULTS } from "@/lib/constants";
 import {
   detectClosedDays,
   formatBusinessStatus,
@@ -440,72 +440,16 @@ export async function searchPlaces(
   );
 }
 
-  do {
-    const body: Record<string, unknown> = {
-      textQuery: params.query,
-      languageCode: "ja",
-      regionCode: "JP",
-      maxResultCount: 20,
-      locationBias: {
-        circle: {
-          center: {
-            latitude: params.latitude,
-            longitude: params.longitude,
-          },
-          radius: params.radiusM,
-        },
-      },
-    };
-
-    if (pageToken) {
-      body.pageToken = pageToken;
-    }
-
-    const res = await fetch(PLACES_SEARCH_TEXT_URL, {
-      method: "POST",
-      headers: placesHeaders(TEXT_SEARCH_FIELD_MASK),
-      body: JSON.stringify(body),
-    });
-
-    const data = (await res.json()) as {
-      places?: NewPlaceSearchItem[];
-      nextPageToken?: string;
-      error?: { message?: string; status?: string };
-    };
-
-    if (!res.ok) {
-      const detail =
-        data.error?.message ?? res.statusText ?? "Text Search failed";
-      throw new Error(`店舗検索に失敗しました: ${detail}`);
-    }
-
-    for (const item of data.places ?? []) {
-      if (!item.id) continue;
-      const placeId = normalizePlaceId(item.id);
-      places.push({
-        placeId,
-        name: item.displayName?.text ?? "",
-        formattedAddress: item.formattedAddress,
-        latitude: item.location?.latitude,
-        longitude: item.location?.longitude,
-        rating: item.rating,
-        userRatingCount: item.userRatingCount,
-        businessStatus: item.businessStatus,
-        primaryType: item.primaryType,
-        category: item.primaryTypeDisplayName?.text,
-        googleMapsUri: item.googleMapsUri,
-      });
-    }
-
-    pageToken = data.nextPageToken;
-    if (pageToken && places.length < MAX_CANDIDATE_PLACES) {
-      await new Promise((r) => setTimeout(r, 300));
-    } else {
-      pageToken = undefined;
-    }
-  } while (pageToken && places.length < MAX_CANDIDATE_PLACES);
-
-  return places;
+export function buildSearchQuery(
+  keyword1: string,
+  keyword2: string | undefined,
+  prefecture: string
+): string {
+  const parts = [keyword1.trim()];
+  const k2 = keyword2?.trim();
+  if (k2) parts.push(k2);
+  parts.push(prefecture.trim());
+  return parts.join(" ");
 }
 
 export type PlaceDetails = {

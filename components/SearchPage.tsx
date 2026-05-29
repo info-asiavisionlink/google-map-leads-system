@@ -1,6 +1,7 @@
 "use client";
 
 import AIScanLoading from "@/components/AIScanLoading";
+import AuthDebugPanel from "@/components/AuthDebugPanel";
 import CopyTsvButton from "@/components/CopyTsvButton";
 import ResultsTable from "@/components/ResultsTable";
 import SearchForm, { type SearchFormValues } from "@/components/SearchForm";
@@ -20,31 +21,21 @@ import {
   API_ERROR_MESSAGE,
   CREDIT_CONSUME_FAILED_MESSAGE,
   INSUFFICIENT_CREDIT_MESSAGE,
-  NO_NEW_RESULTS_MESSAGE,
+  MIN_CREDIT_TO_SEARCH,
+  NO_RESULTS_FOUND_MESSAGE,
   SEARCH_JOB_POLL_MS,
-  TOKEN_AUTH_EXPIRED_MESSAGE,
+  USER_INFO_MISSING_MESSAGE,
 } from "@/lib/constants";
-import {
-  clearStoredAccessToken,
-  resolveAccessToken,
-} from "@/lib/toolToken";
 import type {
   PlaceSearchResult,
   SearchApiResponse,
   SearchJobResponse,
 } from "@/lib/types";
-import { useToolAuth } from "@/lib/useToolAuth";
+import { useAuthState } from "@/lib/useAuthState";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-function authHeaders(token: string): HeadersInit {
-  return {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-  };
-}
-
-function bootstrapAccessToken(): void {
-  resolveAccessToken();
+function formatCredit(n: number): string {
+  return n.toLocaleString("ja-JP");
 }
 
 const TERMINAL_JOB_STATUSES = new Set([
@@ -90,6 +81,10 @@ export default function SearchPage() {
   );
 
   const pollTimerRef = useRef<number | null>(null);
+  const pollUserIdRef = useRef<string | null>(null);
+
+  const displayCredit = authState?.credit ?? getActiveCredit() ?? null;
+  const activeUserId = authState?.userId?.trim() || getActiveUserId() || null;
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current != null) {
@@ -99,7 +94,7 @@ export default function SearchPage() {
   }, []);
 
   const handleJobUpdate = useCallback(
-    async (data: SearchJobResponse) => {
+    (data: SearchJobResponse) => {
       setJobStatus(data.status);
       setCurrentStep(data.currentStep);
       setFetchedCount(data.fetchedCount);
@@ -112,53 +107,62 @@ export default function SearchPage() {
         setIsLoading(false);
         setActiveJobId(null);
 
+        const count = data.savedCount ?? data.results.length;
+        setDisplayCount(count);
+        setLastCreditConsumed(data.creditConsumed ?? 0);
+
+        if (data.credit != null) {
+          patchCredit(data.credit);
+          setLastRemainingCredit(data.credit);
+        }
+
         if (data.status === "completed") {
           setStatus("success");
           setMessage(data.message ?? null);
           setSearchError(null);
-          await refreshVerify();
         } else if (data.status === "no_results") {
           setStatus("no_results");
-          setMessage(data.message ?? NO_NEW_RESULTS_MESSAGE);
+          setMessage(data.message ?? NO_RESULTS_FOUND_MESSAGE);
           setSearchError(null);
+          setResults([]);
+          setCopyText("");
         } else if (data.status === "failed") {
           setStatus("error");
           const errMsg = data.errorMessage ?? data.message ?? API_ERROR_MESSAGE;
           if (errMsg.includes("クレジット")) {
             setSearchError(errMsg || CREDIT_CONSUME_FAILED_MESSAGE);
-            setResults([]);
-            setCopyText("");
+            if (data.results.length === 0) {
+              setResults([]);
+              setCopyText("");
+            }
           } else {
-            setSearchError(errMsg);
+            setSearchError(normalizeUserFacingError(errMsg));
           }
         }
       }
     },
-    [refreshVerify, stopPolling]
+    [patchCredit, stopPolling]
   );
 
   const pollJob = useCallback(
-    async (jobId: string, token: string) => {
+    async (jobId: string, userId: string) => {
       try {
         const res = await fetch(`/api/search-jobs/${jobId}`, {
-          headers: authHeaders(token),
+          headers: { "x-user-id": userId },
           cache: "no-store",
         });
 
         if (res.status === 401) {
-          clearStoredAccessToken();
           stopPolling();
           setIsLoading(false);
-          setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
+          setSearchError(USER_INFO_MISSING_MESSAGE);
           return;
         }
 
-        if (!res.ok) {
-          return;
-        }
+        if (!res.ok) return;
 
         const data = (await res.json()) as SearchJobResponse;
-        await handleJobUpdate(data);
+        handleJobUpdate(data);
       } catch (err) {
         console.error("ジョブポーリングエラー:", err);
       }
@@ -170,9 +174,6 @@ export default function SearchPage() {
     return () => stopPolling();
   }, [stopPolling]);
 
-  const isAuthLoading = authStatus === "loading";
-  const isAuthenticated = authStatus === "authenticated" && verify !== null;
-
   async function handleSearch(values: SearchFormValues) {
     setSearchError(null);
     setSaveWarning(null);
@@ -183,8 +184,6 @@ export default function SearchPage() {
     logAuthStateDebug("handleSearch", authState, {
       authState_userId: authState?.userId ?? "(empty)",
       active_userId: userId ?? "(empty)",
-      body_user_id: userId ?? "(empty)",
-      x_user_id: userId ?? "(empty)",
     });
 
     if (!userId) {
@@ -209,6 +208,31 @@ export default function SearchPage() {
     setFetchedCount(0);
     setSavedCount(0);
     setSearchStartedAt(Date.now());
+    setDisplayCount(null);
+    setLastCreditConsumed(null);
+    setLastRemainingCredit(null);
+
+    const requestHeaders: HeadersInit = {
+      "Content-Type": "application/json",
+      "x-user-id": userId,
+    };
+
+    const requestBody = {
+      user_id: userId,
+      current_credit: creditBalance,
+      prefecture: values.area,
+      keyword1: values.keyword1,
+      keyword2: values.keyword2 || undefined,
+    };
+
+    if (isClientAuthDebugEnabled()) {
+      logAuthStateDebug("search_request", authState, {
+        x_user_id: userId,
+        body_user_id: userId,
+      });
+    }
+
+    pollUserIdRef.current = userId;
 
     try {
       const res = await fetch("/api/places/search", {
@@ -219,26 +243,43 @@ export default function SearchPage() {
 
       const data = (await res.json()) as SearchApiResponse;
 
-      if (data.credit !== undefined && data.credit !== null && verify) {
-        setVerify({ ...verify, credit: data.credit });
+      logSearchApiResponse({
+        response_status: res.status,
+        code: data.code,
+        message: data.message,
+        credit: data.credit,
+      });
+
+      if (data.credit !== undefined && data.credit !== null) {
+        patchCredit(data.credit);
       }
 
       if (res.status === 401 || data.code === "unauthorized") {
-        clearStoredAccessToken();
-        setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
+        setSearchError(USER_INFO_MISSING_MESSAGE);
         setIsLoading(false);
         return;
       }
 
       if (res.status === 402 || data.code === "insufficient_credit") {
-        setSearchError(data.message || INSUFFICIENT_CREDIT_MESSAGE);
+        setSearchError(
+          normalizeUserFacingError(data.message || INSUFFICIENT_CREDIT_MESSAGE)
+        );
+        setIsLoading(false);
+        return;
+      }
+
+      if (data.status === "no_results") {
+        setStatus("no_results");
+        setMessage(data.message ?? NO_RESULTS_FOUND_MESSAGE);
         setIsLoading(false);
         return;
       }
 
       if (data.status === "error" || (!res.ok && data.status !== "processing")) {
         setSearchError(
-          data.code === "api_error" ? API_ERROR_MESSAGE : data.message
+          normalizeUserFacingError(
+            data.code === "api_error" ? API_ERROR_MESSAGE : data.message
+          )
         );
         setStatus("error");
         setIsLoading(false);
@@ -250,17 +291,16 @@ export default function SearchPage() {
         setStatus("processing");
         setMessage(data.message);
 
-        await pollJob(data.jobId, accessToken);
+        await pollJob(data.jobId, userId);
 
         pollTimerRef.current = window.setInterval(() => {
-          void pollJob(data.jobId!, accessToken);
+          void pollJob(data.jobId!, pollUserIdRef.current ?? userId);
         }, SEARCH_JOB_POLL_MS);
         return;
       }
 
       setIsLoading(false);
-    } catch (err) {
-      console.error("検索リクエストエラー:", err);
+    } catch {
       setSearchError(API_ERROR_MESSAGE);
       setStatus("error");
       setIsLoading(false);
@@ -268,16 +308,17 @@ export default function SearchPage() {
   }
 
   function handleCreditUpdate(credit: number) {
-    if (verify) {
-      setVerify({ ...verify, credit });
-    }
+    patchCredit(credit);
+    setLastRemainingCredit(credit);
   }
 
   const showScanLoading =
     isLoading && searchStartedAt != null && jobStatus !== "completed";
 
   return (
-    <div className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6 lg:py-10">
+    <div className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+      <AuthDebugPanel />
+
       <div className="mb-4">
         <ToolAuthBar authState={authState} isLoading={isAuthLoading} />
       </div>
@@ -337,15 +378,51 @@ export default function SearchPage() {
         </div>
       )}
 
-      {status === "no_results" && message && !searchError && (
-        <div className="mt-6 break-words rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          {message || NO_NEW_RESULTS_MESSAGE}
+      {saveWarning && (
+        <div
+          role="status"
+          className="mt-6 break-words rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          {saveWarning}（画面の検索結果とコピーはご利用いただけます）
         </div>
       )}
 
-      {status === "success" && message && (
-        <div className="mt-6 break-words rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-800">
-          {message}
+      {(status === "success" || status === "no_results") && (
+        <div
+          className={`mt-6 break-words rounded-lg border px-4 py-4 text-sm ${
+            status === "success"
+              ? "border-green-200 bg-green-50 text-green-900"
+              : "border-amber-200 bg-amber-50 text-amber-900"
+          }`}
+        >
+          <dl className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <dt className="text-xs opacity-80">取得件数</dt>
+              <dd className="text-lg font-semibold">{displayCount ?? 0}件</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-80">消費クレジット</dt>
+              <dd className="text-lg font-semibold">
+                {formatCredit(lastCreditConsumed ?? 0)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-80">残クレジット</dt>
+              <dd className="text-lg font-semibold">
+                {lastRemainingCredit != null
+                  ? formatCredit(lastRemainingCredit)
+                  : "—"}
+              </dd>
+            </div>
+          </dl>
+          {message && status === "no_results" && (
+            <p className="mt-3 text-sm opacity-90">
+              {message || NO_RESULTS_FOUND_MESSAGE}
+            </p>
+          )}
+          {message && status === "success" && (
+            <p className="mt-3 text-sm opacity-90">{message}</p>
+          )}
         </div>
       )}
 
@@ -365,7 +442,7 @@ export default function SearchPage() {
           </div>
           <ResultsTable
             results={results}
-            accessToken={accessToken}
+            userId={activeUserId}
             onCreditUpdate={handleCreditUpdate}
           />
         </section>
