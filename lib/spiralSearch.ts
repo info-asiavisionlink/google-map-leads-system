@@ -5,11 +5,11 @@ import {
 } from "@/lib/googleMaps";
 import type { SpiralSearchPosition } from "@/lib/searchProgress";
 
-/** 検索円の半径（固定 1km） */
-export const FIXED_SEARCH_RADIUS_M = 1000;
+/** 検索円の半径（都道府県広域検索用・lib/constants の SEARCH_POINT_RADIUS_M を参照） */
+export const FIXED_SEARCH_RADIUS_M = 6000;
 
-/** スパイラル移動の1ステップ距離 */
-export const SPIRAL_STEP_KM = 1.5;
+/** スパイラル移動の1ステップ距離（km） */
+export const SPIRAL_STEP_KM = 3;
 
 /** 方角: 0=東, 1=北, 2=西, 3=南（北を0度とする方位角） */
 const DIRECTION_BEARINGS = [90, 0, 270, 180] as const;
@@ -74,7 +74,9 @@ export function createSpiralSearcher(params: {
   maxExplorationRadiusKm: number;
   startPosition: SpiralSearchPosition;
   excludedPlaceIds: Set<string>;
+  radiusM?: number;
 }): SpiralSearcher {
+  const searchRadiusM = params.radiusM ?? FIXED_SEARCH_RADIUS_M;
   const sessionSeen = new Set<string>();
   const center = {
     lat: params.startPosition.centerLatitude,
@@ -99,7 +101,7 @@ export function createSpiralSearcher(params: {
     return {
       lat: currentLat,
       lng: currentLng,
-      radiusM: FIXED_SEARCH_RADIUS_M,
+      radiusM: searchRadiusM,
     };
   }
 

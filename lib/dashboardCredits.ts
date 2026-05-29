@@ -8,6 +8,7 @@ import {
   safeJsonForLog,
 } from "@/lib/authDebug";
 import {
+  AI_CHAT_TOOL_ID,
   DASHBOARD_SUPABASE_NOT_CONFIGURED_MESSAGE,
   INSUFFICIENT_CREDIT_MESSAGE,
   TOOL_AI_CHAT_KEY,
@@ -62,6 +63,10 @@ export function getToolKey(): string {
 
 export function getAiChatToolKey(): string {
   return process.env.NEXT_PUBLIC_TOOL_AI_CHAT_KEY?.trim() || TOOL_AI_CHAT_KEY;
+}
+
+export function getAiChatToolId(): string {
+  return process.env.NEXT_PUBLIC_TOOL_AI_CHAT_KEY?.trim() || AI_CHAT_TOOL_ID;
 }
 
 export function getAccessTokenFromRequest(
@@ -253,6 +258,9 @@ export type ConsumeDashboardCreditsResult = {
 export type ConsumeDashboardCreditsParams = {
   userId: string;
   toolKey?: string;
+  /** tool_usage_logs.tool_id（必須・null不可） */
+  toolId?: string;
+  toolName?: string;
   amount: number;
   resultCount: number;
   externalRequestId: string;
@@ -260,7 +268,9 @@ export type ConsumeDashboardCreditsParams = {
 
 async function saveToolUsageLog(params: {
   userId: string;
+  toolId: string;
   toolKey: string;
+  toolName: string;
   amount: number;
   resultCount: number;
   creditBefore: number;
@@ -269,34 +279,42 @@ async function saveToolUsageLog(params: {
 }): Promise<void> {
   const supabase = getDashboardSupabaseAdmin();
 
+  const logMessage =
+    params.resultCount === 1 && params.amount === 2
+      ? `AIチャット（${params.amount}クレジット消費）`
+      : `${params.resultCount}件取得（${params.amount}クレジット消費）`;
+
   const row = {
     user_id: params.userId,
+    tool_id: params.toolId,
     tool_key: params.toolKey,
-    tool_name: TOOL_NAME,
+    tool_name: params.toolName,
     credit_cost: params.amount,
     credit_before: params.creditBefore,
     credit_after: params.creditAfter,
     status: "completed",
-    message: `${params.resultCount}件取得（${params.amount}クレジット消費）`,
+    message: logMessage,
   };
 
   const { error } = await supabase.from("tool_usage_logs").insert(row);
 
   if (error) {
-    console.warn(
-      "[dashboard-credits] tool_usage_logs 保存をスキップ:",
-      error.message,
-      "external_request_id:",
-      params.externalRequestId
-    );
+    console.warn("[dashboard-credits] tool_usage_logs 保存をスキップ:", {
+      user_id: params.userId,
+      tool_id: params.toolId,
+      external_request_id: params.externalRequestId,
+      error: error.message,
+    });
     authDebugError("dashboard-usage-log-skipped", {
       user_id: params.userId,
+      tool_id: params.toolId,
       external_request_id: params.externalRequestId,
       error: error.message,
     });
   } else {
     authDebugInfo("dashboard-usage-log-saved", {
       user_id: params.userId,
+      tool_id: params.toolId,
       external_request_id: params.externalRequestId,
       credit_used: params.amount,
     });
@@ -327,11 +345,14 @@ export async function consumeDashboardCredits(
   }
 
   const toolKey = params.toolKey ?? getToolKey();
+  const toolId = params.toolId?.trim() || toolKey;
+  const toolName = params.toolName ?? TOOL_NAME;
   const amount = params.amount;
   const resultCount = params.resultCount;
 
   authDebugInfo("dashboard-credits-consume-start", {
     user_id: userId,
+    tool_id: toolId,
     tool_key: toolKey,
     amount,
     result_count: resultCount,
@@ -414,7 +435,9 @@ export async function consumeDashboardCredits(
   try {
     await saveToolUsageLog({
       userId,
+      toolId,
       toolKey,
+      toolName,
       amount,
       resultCount,
       creditBefore,

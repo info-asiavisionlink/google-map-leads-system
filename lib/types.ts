@@ -50,6 +50,13 @@ export type SearchJobResponse = {
   fetchedCount: number;
   savedCount: number;
   targetCount: number;
+  candidateCount?: number;
+  duplicateCount?: number;
+  previouslySavedCount?: number;
+  searchPointCount?: number;
+  pageFetchCount?: number;
+  currentLocationLabel?: string;
+  searchSummary?: string;
   results: PlaceSearchResult[];
   copyText: string;
   message?: string;

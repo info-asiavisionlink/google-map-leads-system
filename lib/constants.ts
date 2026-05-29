@@ -22,8 +22,11 @@ export const GOOGLE_MAP_SEARCH_CREDIT_COST = MAX_CREDIT_COST;
 /** AIチャット1回あたりのクレジット消費数 */
 export const AI_CHAT_CREDIT_COST = 2;
 
+/** AIチャット tool_id / tool_key（tool_usage_logs 用） */
+export const AI_CHAT_TOOL_ID = "google_map_leads_ai_chat";
+
 export const TOOL_KEY = "google_map_leads";
-export const TOOL_AI_CHAT_KEY = "google_map_leads_ai_chat";
+export const TOOL_AI_CHAT_KEY = AI_CHAT_TOOL_ID;
 export const TOOL_NAME = "Googleマップ営業リスト作成";
 
 /** Text Search で収集する候補の上限（互換用） */
@@ -96,6 +99,18 @@ export const TOOL_USER_VERIFY_FAILED_MESSAGE =
   "ユーザー情報の確認に失敗しました。ダッシュボードから再度ツールを開いてください。";
 
 export const SEARCH_JOB_POLL_MS = 2500;
+
+/** 1地点あたりの Text Search ページング上限（20件×ページ数） */
+export const MAX_PAGES_PER_POINT = 3;
+
+/** スパイラル追加フェッチの上限 */
+export const MAX_SPIRAL_FETCHES = 120;
+
+/** 広域都道府県検索の locationBias 半径（m） */
+export const SEARCH_POINT_RADIUS_M = 6000;
+
+/** 東京都向け検索半径（m） */
+export const SEARCH_POINT_RADIUS_M_TOKYO = 8000;
 
 export const SEARCH_PROGRESS_STEPS = [
   { key: "scanning", label: "AIがGoogleマップ上の店舗情報をスキャンしています" },

@@ -9,6 +9,7 @@ import {
   consumeDashboardCredits,
   DashboardCreditsError,
   getDashboardUserCredit,
+  getToolKey,
   hasEnoughCredit,
 } from "@/lib/dashboardCredits";
 import {
@@ -19,6 +20,10 @@ import {
   type TextSearchPlace,
 } from "@/lib/googleMaps";
 import { getMaxSearchRadiusKm } from "@/lib/prefectureSearchRadius";
+import {
+  createPrefectureWideSearcher,
+  FIXED_SEARCH_RADIUS_M,
+} from "@/lib/prefectureWideSearch";
 import {
   loadSearchProgressRecord,
   progressRowToSpiralPosition,
@@ -32,10 +37,6 @@ import {
   logSupabasePersistenceError,
   placeSearchResultToRow,
 } from "@/lib/searchPersistence";
-import {
-  createSpiralSearcher,
-  FIXED_SEARCH_RADIUS_M,
-} from "@/lib/spiralSearch";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import type { PlaceSearchResult, SearchJobStatus, SearchStopReason } from "@/lib/types";
 
@@ -50,6 +51,15 @@ type SearchJobRow = {
   area: string;
   keyword1: string;
   keyword2: string | null;
+};
+
+type JobStatsPatch = {
+  candidate_count?: number;
+  duplicate_count?: number;
+  previously_saved_count?: number;
+  search_point_count?: number;
+  page_fetch_count?: number;
+  current_location_label?: string;
 };
 
 async function updateJob(
@@ -72,6 +82,24 @@ function mapStepFromSpiral(spiralStep: number, phase: "fetch" | "details" | "sav
   if (phase === "details") return "details";
   if (spiralStep > 0) return "fetching";
   return "scanning";
+}
+
+function buildStatsPatch(stats: {
+  apiCandidateCount: number;
+  sessionDuplicateCount: number;
+  previouslySavedExclusionCount: number;
+  searchPointCount: number;
+  pageFetchCount: number;
+  currentLocationLabel: string;
+}): JobStatsPatch {
+  return {
+    candidate_count: stats.apiCandidateCount,
+    duplicate_count: stats.sessionDuplicateCount,
+    previously_saved_count: stats.previouslySavedExclusionCount,
+    search_point_count: stats.searchPointCount,
+    page_fetch_count: stats.pageFetchCount,
+    current_location_label: stats.currentLocationLabel,
+  };
 }
 
 export async function processSearchJob(jobId: string): Promise<void> {
@@ -148,7 +176,8 @@ export async function processSearchJob(jobId: string): Promise<void> {
       ...previouslySavedPlaceIds,
     ]);
 
-    const searcher = createSpiralSearcher({
+    const searcher = await createPrefectureWideSearcher({
+      prefecture,
       query,
       center,
       maxExplorationRadiusKm: maxRadiusKm,
@@ -160,9 +189,9 @@ export async function processSearchJob(jobId: string): Promise<void> {
     const seenPlaceIds = new Set<string>();
     const activeProgressId = progressRecord?.id;
     const lifetimeSavedBaseline = progressRecord?.total_saved_count ?? 0;
-    let fetchedCount = 0;
     let stopReason: SearchStopReason | null = null;
     let saveFailed = false;
+    let totalSaveFailedCount = 0;
     const searchStartedAt = Date.now();
 
     function buildRuntimeExcluded(): Set<string> {
@@ -207,23 +236,29 @@ export async function processSearchJob(jobId: string): Promise<void> {
         TARGET_RESULTS - savedResults.length
       );
 
+      const stats = searcher.getStats();
+
       await updateJob(jobId, {
         status: "fetching" as SearchJobStatus,
         current_step: mapStepFromSpiral(
           searcher.getPosition().currentStep,
           "fetch"
         ),
+        fetched_count: stats.apiCandidateCount,
+        ...buildStatsPatch(stats),
       });
 
       const batchCandidates = await searcher.fetchNextBatch(
         batchFetchLimit,
         buildRuntimeExcluded()
       );
-      fetchedCount += batchCandidates.length;
+
+      const afterFetchStats = searcher.getStats();
 
       await updateJob(jobId, {
-        fetched_count: fetchedCount,
+        fetched_count: afterFetchStats.apiCandidateCount,
         current_step: "deduping",
+        ...buildStatsPatch(afterFetchStats),
       });
 
       if (batchCandidates.length === 0) {
@@ -249,6 +284,7 @@ export async function processSearchJob(jobId: string): Promise<void> {
       await updateJob(jobId, {
         status: "details" as SearchJobStatus,
         current_step: "details",
+        ...buildStatsPatch(searcher.getStats()),
       });
 
       const detailsList = await Promise.all(
@@ -267,29 +303,38 @@ export async function processSearchJob(jobId: string): Promise<void> {
 
       const insertOutcome = await insertSearchResultsBatch(supabase, resultRows);
 
-      if (!insertOutcome.ok) {
+      if (!insertOutcome.ok && insertOutcome.savedCount === 0) {
         saveFailed = true;
         stopReason = "save_error";
         logSearchResultsSaveFailure(insertOutcome.error, {
           attemptedCount: resultRows.length,
           sampleRow: resultRows[0] ?? null,
-          duplicateExclusionCount: 0,
-          previouslySavedPlaceIdCount: previouslySavedPlaceIds.size,
+          duplicateExclusionCount: afterFetchStats.sessionDuplicateCount,
+          previouslySavedPlaceIdCount: afterFetchStats.previouslySavedExclusionCount,
         });
         break;
       }
 
-      for (const r of resultRows) {
-        previouslySavedPlaceIds.add(r.place_id);
-        seenPlaceIds.add(r.place_id);
-        searchExcludedPlaceIds.add(r.place_id);
+      totalSaveFailedCount += insertOutcome.failedCount;
+
+      const savedPlaceIdSet = new Set(insertOutcome.savedPlaceIds);
+
+      const successfullySavedResults = batchResults.filter((r) =>
+        savedPlaceIdSet.has(r.placeId)
+      );
+
+      for (const placeId of insertOutcome.savedPlaceIds) {
+        previouslySavedPlaceIds.add(placeId);
+        seenPlaceIds.add(placeId);
+        searchExcludedPlaceIds.add(placeId);
       }
 
-      savedResults.push(...batchResults);
+      savedResults.push(...successfullySavedResults);
 
       await updateJob(jobId, {
         saved_count: savedResults.length,
-        fetched_count: fetchedCount,
+        fetched_count: afterFetchStats.apiCandidateCount,
+        ...buildStatsPatch(afterFetchStats),
       });
 
       await upsertSearchProgress(supabase, {
@@ -309,9 +354,27 @@ export async function processSearchJob(jobId: string): Promise<void> {
       }
     }
 
+    const finalStats = searcher.getStats();
     const finalPosition = searcher.getPosition();
     const isRegionExhausted =
       stopReason === "prefecture_fully_scanned" && searcher.isExhausted();
+
+    console.info("[search-processor] 検索完了サマリー", {
+      jobId,
+      prefecture,
+      keyword1,
+      keyword2,
+      stopReason,
+      googleApiCandidateCount: finalStats.apiCandidateCount,
+      duplicateExclusionCount: finalStats.sessionDuplicateCount,
+      previouslySavedExclusionCount: finalStats.previouslySavedExclusionCount,
+      newSavedCount: savedResults.length,
+      displayCount: savedResults.length,
+      searchPointCount: finalStats.searchPointCount,
+      searchRadiusM: FIXED_SEARCH_RADIUS_M,
+      pageFetchCount: finalStats.pageFetchCount,
+      saveFailedCount: totalSaveFailedCount,
+    });
 
     await upsertSearchProgress(supabase, {
       userId,
@@ -346,7 +409,8 @@ export async function processSearchJob(jobId: string): Promise<void> {
         status: (saveFailed ? "failed" : "no_results") as SearchJobStatus,
         current_step: "completed",
         saved_count: 0,
-        fetched_count: fetchedCount,
+        fetched_count: finalStats.apiCandidateCount,
+        ...buildStatsPatch(finalStats),
         error_message: saveFailed ? SAVE_RESULTS_FAILED_MESSAGE : undefined,
         completed_at: new Date().toISOString(),
       });
@@ -379,7 +443,8 @@ export async function processSearchJob(jobId: string): Promise<void> {
         status: "failed" as SearchJobStatus,
         error_message: "クレジットが不足しています",
         saved_count: savedCount,
-        fetched_count: fetchedCount,
+        fetched_count: finalStats.apiCandidateCount,
+        ...buildStatsPatch(finalStats),
         completed_at: new Date().toISOString(),
       });
       return;
@@ -388,6 +453,8 @@ export async function processSearchJob(jobId: string): Promise<void> {
     try {
       await consumeDashboardCredits({
         userId,
+        toolKey: getToolKey(),
+        toolId: getToolKey(),
         amount: actualCreditCost,
         resultCount: savedCount,
         externalRequestId: searchRequestId,
@@ -413,7 +480,8 @@ export async function processSearchJob(jobId: string): Promise<void> {
         status: "failed" as SearchJobStatus,
         error_message: detail,
         saved_count: savedCount,
-        fetched_count: fetchedCount,
+        fetched_count: finalStats.apiCandidateCount,
+        ...buildStatsPatch(finalStats),
         completed_at: new Date().toISOString(),
       });
       return;
@@ -451,7 +519,8 @@ export async function processSearchJob(jobId: string): Promise<void> {
       status: "completed" as SearchJobStatus,
       current_step: "completed",
       saved_count: savedCount,
-      fetched_count: fetchedCount,
+      fetched_count: finalStats.apiCandidateCount,
+      ...buildStatsPatch(finalStats),
       credit_consumed: true,
       completed_at: new Date().toISOString(),
     });

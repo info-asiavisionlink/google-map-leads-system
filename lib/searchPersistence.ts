@@ -1,5 +1,6 @@
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 import type { PlaceSearchResult } from "@/lib/types";
+import { sanitizeOptionalText, sanitizeText } from "@/lib/textSanitize";
 
 export const SEARCH_RESULTS_CHUNK_SIZE = 50;
 
@@ -34,25 +35,43 @@ export function toDbTextField(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (Array.isArray(value)) {
     const joined = value.map((v) => String(v)).join("\n").trim();
-    return joined || null;
+    return sanitizeText(joined);
   }
   if (typeof value === "object") {
     try {
-      return JSON.stringify(value);
+      return sanitizeText(JSON.stringify(value));
     } catch {
       return null;
     }
   }
-  const s = String(value).trim();
-  if (!s || s === "-") return null;
-  return s;
+  return sanitizeText(String(value));
 }
 
 export function toOptionalString(value: string | null | undefined): string | null {
-  if (value === null || value === undefined) return null;
-  const s = value.trim();
-  if (!s || s === "-") return null;
-  return s;
+  return sanitizeOptionalText(value);
+}
+
+export function sanitizeSearchResultRow(row: SearchResultRow): SearchResultRow {
+  return {
+    ...row,
+    place_id: sanitizeText(row.place_id) ?? row.place_id,
+    name: sanitizeOptionalText(row.name),
+    address: sanitizeOptionalText(row.address),
+    phone_number: sanitizeOptionalText(row.phone_number),
+    website_url: sanitizeOptionalText(row.website_url),
+    google_maps_url: sanitizeOptionalText(row.google_maps_url),
+    email: sanitizeOptionalText(row.email),
+    international_phone_number: sanitizeOptionalText(row.international_phone_number),
+    business_status: sanitizeOptionalText(row.business_status),
+    category: sanitizeOptionalText(row.category),
+    primary_type: sanitizeOptionalText(row.primary_type),
+    closed_days: toDbTextField(row.closed_days),
+    reviews_text: toDbTextField(row.reviews_text),
+    editorial_summary: toDbTextField(row.editorial_summary),
+    price_level: toDbTextField(row.price_level),
+    photo_names: toDbTextField(row.photo_names),
+    opening_hours: toDbTextField(row.opening_hours),
+  };
 }
 
 export function placeSearchResultToRow(
@@ -161,21 +180,48 @@ export function logSearchResultsSaveFailure(
 export async function insertSearchResultsBatch(
   supabase: SupabaseClient,
   rows: SearchResultRow[]
-): Promise<{ ok: true } | { ok: false; error: PostgrestError }> {
+): Promise<
+  | { ok: true; savedCount: number; failedCount: number; savedPlaceIds: string[] }
+  | { ok: false; error: PostgrestError; savedCount: number; failedCount: number; savedPlaceIds: string[] }
+> {
   if (rows.length === 0) {
-    return { ok: true };
+    return { ok: true, savedCount: 0, failedCount: 0, savedPlaceIds: [] };
   }
 
-  const { error } = await supabase.from("search_results").insert(rows);
-  if (error) {
-    logSupabasePersistenceError("search_results insert error", error, {
+  let savedCount = 0;
+  let failedCount = 0;
+  let lastError: PostgrestError | null = null;
+  const savedPlaceIds: string[] = [];
+
+  for (const rawRow of rows) {
+    const row = sanitizeSearchResultRow(rawRow);
+    const { error } = await supabase.from("search_results").insert(row);
+
+    if (error) {
+      failedCount++;
+      lastError = error;
+      console.error("[search-persistence] search_results 1件保存失敗", {
+        place_id: row.place_id,
+        code: error.code,
+        message: error.message,
+        details: error.details,
+      });
+      continue;
+    }
+
+    savedCount++;
+    savedPlaceIds.push(row.place_id);
+  }
+
+  if (failedCount > 0 && savedCount === 0 && lastError) {
+    logSupabasePersistenceError("search_results insert error (all failed)", lastError, {
       rowCount: rows.length,
-      sampleRow: rows[0],
+      sampleRow: sanitizeSearchResultRow(rows[0]),
     });
-    return { ok: false, error };
+    return { ok: false, error: lastError, savedCount, failedCount, savedPlaceIds };
   }
 
-  return { ok: true };
+  return { ok: true, savedCount, failedCount, savedPlaceIds };
 }
 
 export async function insertSearchResultsInChunks(

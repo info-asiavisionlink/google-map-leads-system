@@ -62,6 +62,12 @@ export default function SearchPage() {
   const [currentStep, setCurrentStep] = useState<string>("scanning");
   const [fetchedCount, setFetchedCount] = useState(0);
   const [savedCount, setSavedCount] = useState(0);
+  const [candidateCount, setCandidateCount] = useState(0);
+  const [previouslySavedCount, setPreviouslySavedCount] = useState(0);
+  const [duplicateCount, setDuplicateCount] = useState(0);
+  const [searchPointCount, setSearchPointCount] = useState(0);
+  const [currentLocationLabel, setCurrentLocationLabel] = useState<string | undefined>();
+  const [searchSummary, setSearchSummary] = useState<string | null>(null);
   const [searchStartedAt, setSearchStartedAt] = useState<number | null>(null);
 
   const [results, setResults] = useState<PlaceSearchResult[]>([]);
@@ -99,6 +105,11 @@ export default function SearchPage() {
       setCurrentStep(data.currentStep);
       setFetchedCount(data.fetchedCount);
       setSavedCount(data.savedCount);
+      setCandidateCount(data.candidateCount ?? data.fetchedCount);
+      setPreviouslySavedCount(data.previouslySavedCount ?? 0);
+      setDuplicateCount(data.duplicateCount ?? 0);
+      setSearchPointCount(data.searchPointCount ?? 0);
+      setCurrentLocationLabel(data.currentLocationLabel);
       setResults(data.results);
       setCopyText(data.copyText);
 
@@ -118,10 +129,12 @@ export default function SearchPage() {
 
         if (data.status === "completed") {
           setStatus("success");
+          setSearchSummary(data.searchSummary ?? null);
           setMessage(data.message ?? null);
           setSearchError(null);
         } else if (data.status === "no_results") {
           setStatus("no_results");
+          setSearchSummary(data.searchSummary ?? null);
           setMessage(data.message ?? NO_RESULTS_FOUND_MESSAGE);
           setSearchError(null);
           setResults([]);
@@ -207,6 +220,12 @@ export default function SearchPage() {
     setCurrentStep("scanning");
     setFetchedCount(0);
     setSavedCount(0);
+    setCandidateCount(0);
+    setPreviouslySavedCount(0);
+    setDuplicateCount(0);
+    setSearchPointCount(0);
+    setCurrentLocationLabel(undefined);
+    setSearchSummary(null);
     setSearchStartedAt(Date.now());
     setDisplayCount(null);
     setLastCreditConsumed(null);
@@ -366,6 +385,11 @@ export default function SearchPage() {
           fetchedCount={fetchedCount}
           currentStep={currentStep}
           startedAt={searchStartedAt}
+          candidateCount={candidateCount}
+          previouslySavedCount={previouslySavedCount}
+          duplicateCount={duplicateCount}
+          searchPointCount={searchPointCount}
+          currentLocationLabel={currentLocationLabel}
         />
       )}
 
@@ -395,6 +419,11 @@ export default function SearchPage() {
               : "border-amber-200 bg-amber-50 text-amber-900"
           }`}
         >
+          {searchSummary && (
+            <p className="mb-4 text-base font-medium leading-relaxed">
+              {searchSummary}
+            </p>
+          )}
           <dl className="grid gap-3 sm:grid-cols-3">
             <div>
               <dt className="text-xs opacity-80">取得件数</dt>

@@ -87,56 +87,55 @@ export default function PlaceAiChat({
   }
 
   return (
-    <div className="mt-4 min-w-0 border-t border-gray-100 pt-4">
+    <div className="mt-6 w-full min-w-0 max-w-full border-t border-blue-100 pt-5">
       {!isOpen ? (
         <button
           type="button"
           onClick={() => setIsOpen(true)}
-          className="w-full rounded-lg border border-cyan-200 bg-gradient-to-r from-blue-50 to-cyan-50 px-4 py-2.5 text-sm font-semibold text-blue-800 transition hover:from-blue-100 hover:to-cyan-100 sm:w-auto"
+          className="flex h-12 w-full items-center justify-center rounded-xl border-2 border-blue-200 bg-gradient-to-r from-blue-50 to-cyan-50 px-6 text-base font-semibold text-blue-800 transition hover:from-blue-100 hover:to-cyan-100"
         >
-          AIに質問
+          AIに質問する
         </button>
       ) : (
-        <div className="min-w-0 rounded-xl border border-cyan-100 bg-gradient-to-br from-white to-cyan-50/40 p-4 shadow-sm">
-          <div className="mb-3 flex min-w-0 items-start justify-between gap-2">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">
+        <div className="w-full min-w-0 max-w-full overflow-hidden rounded-2xl border-2 border-blue-200 bg-gradient-to-br from-white to-blue-50/60 p-5 shadow-md sm:p-6">
+          <div className="mb-5 flex min-w-0 items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">
                 AIアシスタント
               </p>
-              <h4 className="break-words text-sm font-bold text-gray-900">
+              <h4 className="mt-1 break-words text-xl font-bold text-gray-900 sm:text-2xl">
                 {place.name}
               </h4>
-              <p className="mt-1 break-words text-xs text-gray-600">
+              <p className="mt-2 break-words text-base text-gray-600">
                 {hasWebsite
                   ? "公式サイト情報も確認して回答します"
-                  : "Googleマップ情報をもとに回答します"}
+                  : "Googleマップ保存情報をもとに回答します"}
               </p>
             </div>
             <button
               type="button"
               onClick={() => setIsOpen(false)}
-              className="shrink-0 rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-100"
+              className="shrink-0 rounded-lg px-3 py-2 text-base text-gray-500 hover:bg-gray-100"
               aria-label="チャットを閉じる"
             >
               閉じる
             </button>
           </div>
 
-          <p className="mb-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <p className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-base font-medium text-amber-900">
             1回の質問で {AI_CHAT_CREDIT_COST} クレジット消費します
           </p>
 
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <label className="block min-w-0">
-              <span className="mb-1 block text-xs font-medium text-gray-700">
-                質問
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <label className="block min-w-0 w-full">
+              <span className="mb-2 block text-base font-semibold text-gray-800">
+                質問内容
               </span>
               <textarea
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
-                rows={3}
                 placeholder="例）この店舗の強みや営業提案のポイントは？"
-                className="w-full min-w-0 max-w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm break-words focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+                className="min-h-[120px] w-full min-w-0 max-w-full resize-y rounded-xl border-2 border-gray-200 px-4 py-3 text-base leading-relaxed break-words focus:border-blue-400 focus:outline-none focus:ring-4 focus:ring-blue-100"
                 disabled={isLoading}
               />
             </label>
@@ -144,40 +143,44 @@ export default function PlaceAiChat({
             <button
               type="submit"
               disabled={isLoading || !question.trim()}
-              className="w-full rounded-lg bg-gradient-to-r from-blue-600 to-cyan-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:from-blue-700 hover:to-cyan-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+              className="flex h-12 w-full items-center justify-center rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 px-6 text-base font-bold text-white shadow-md transition hover:from-blue-700 hover:to-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isLoading ? "回答を生成中…" : "質問を送信"}
             </button>
           </form>
 
           {isLoading && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-cyan-800">
-              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-cyan-600 border-t-transparent" />
-              AIが店舗情報を分析しています…
+            <div className="mt-5 flex items-center gap-3 rounded-xl border border-blue-100 bg-blue-50 px-4 py-4 text-base text-blue-800">
+              <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+              AIが店舗情報を確認中...
             </div>
           )}
 
           {error && (
             <p
               role="alert"
-              className="mt-3 break-words rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+              className="mt-5 break-words rounded-xl border border-red-200 bg-red-50 px-4 py-4 text-base text-red-800"
             >
               {error}
             </p>
           )}
 
           {infoMessage && !error && (
-            <p className="mt-3 break-words rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+            <p className="mt-5 break-words rounded-xl border border-blue-100 bg-blue-50 px-4 py-4 text-base text-blue-800">
               {infoMessage}
             </p>
           )}
 
-          {answer && (
-            <div className="mt-3 min-w-0 rounded-lg border border-cyan-100 bg-white px-3 py-3">
-              <p className="mb-1 text-xs font-semibold text-cyan-700">回答</p>
-              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-gray-800">
-                {answer}
-              </p>
+          {(answer || isLoading) && (
+            <div className="mt-5 min-h-[160px] w-full min-w-0 max-w-full overflow-hidden rounded-xl border-2 border-blue-100 bg-white p-5 sm:p-6">
+              <p className="mb-3 text-base font-bold text-blue-700">AI回答</p>
+              {answer ? (
+                <p className="whitespace-pre-wrap break-words text-base leading-relaxed text-gray-800">
+                  {answer}
+                </p>
+              ) : (
+                <p className="text-base text-gray-400">回答を生成しています…</p>
+              )}
             </div>
           )}
         </div>

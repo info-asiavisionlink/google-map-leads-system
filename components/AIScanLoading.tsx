@@ -8,6 +8,11 @@ type AIScanLoadingProps = {
   fetchedCount: number;
   currentStep?: string;
   startedAt: number;
+  candidateCount?: number;
+  previouslySavedCount?: number;
+  duplicateCount?: number;
+  searchPointCount?: number;
+  currentLocationLabel?: string;
 };
 
 function formatElapsed(ms: number): string {
@@ -22,6 +27,11 @@ export default function AIScanLoading({
   fetchedCount,
   currentStep,
   startedAt,
+  candidateCount = 0,
+  previouslySavedCount = 0,
+  duplicateCount = 0,
+  searchPointCount = 0,
+  currentLocationLabel,
 }: AIScanLoadingProps) {
   const [elapsedMs, setElapsedMs] = useState(0);
 
@@ -38,15 +48,17 @@ export default function AIScanLoading({
     if (savedCount > 0) {
       return SEARCH_PROGRESS_STEPS.findIndex((s) => s.key === "saving");
     }
-    if (fetchedCount > 0) {
+    if (fetchedCount > 0 || candidateCount > 0) {
       return SEARCH_PROGRESS_STEPS.findIndex((s) => s.key === "fetching");
     }
     return 0;
-  }, [currentStep, fetchedCount, savedCount]);
+  }, [currentStep, fetchedCount, savedCount, candidateCount]);
 
   const activeLabel =
     SEARCH_PROGRESS_STEPS[activeStepIndex]?.label ??
     SEARCH_PROGRESS_STEPS[0].label;
+
+  const apiCount = candidateCount || fetchedCount;
 
   return (
     <section
@@ -73,6 +85,12 @@ export default function AIScanLoading({
             <h3 className="mt-1 break-words text-lg font-bold text-white sm:text-xl">
               {activeLabel}
             </h3>
+            {currentLocationLabel && (
+              <p className="mt-2 break-words text-sm text-cyan-200/90">
+                検索範囲を拡大しながら取得しています：{currentLocationLabel}
+                {searchPointCount > 0 ? `（${searchPointCount}地点目）` : ""}
+              </p>
+            )}
           </div>
 
           <ol className="space-y-2">
@@ -105,11 +123,29 @@ export default function AIScanLoading({
             })}
           </ol>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-xl border border-cyan-400/20 bg-white/5 px-4 py-3">
-              <p className="text-xs text-cyan-200/80">取得済み</p>
+              <p className="text-xs text-cyan-200/80">Google API候補</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-white">
+                {apiCount}
+                <span className="ml-1 text-sm font-medium text-cyan-200">
+                  件
+                </span>
+              </p>
+            </div>
+            <div className="rounded-xl border border-cyan-400/20 bg-white/5 px-4 py-3">
+              <p className="text-xs text-cyan-200/80">新規保存</p>
               <p className="mt-1 text-2xl font-bold tabular-nums text-white">
                 {savedCount}
+                <span className="ml-1 text-sm font-medium text-cyan-200">
+                  件
+                </span>
+              </p>
+            </div>
+            <div className="rounded-xl border border-cyan-400/20 bg-white/5 px-4 py-3">
+              <p className="text-xs text-cyan-200/80">過去取得済み除外</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-white">
+                {previouslySavedCount}
                 <span className="ml-1 text-sm font-medium text-cyan-200">
                   件
                 </span>
@@ -123,9 +159,11 @@ export default function AIScanLoading({
             </div>
           </div>
 
-          {fetchedCount > 0 && savedCount === 0 && (
+          {(duplicateCount > 0 || searchPointCount > 0) && (
             <p className="text-xs text-cyan-200/70">
-              候補 {fetchedCount} 件を確認中…
+              {duplicateCount > 0 && `重複除外 ${duplicateCount}件`}
+              {duplicateCount > 0 && searchPointCount > 0 && " / "}
+              {searchPointCount > 0 && `検索地点 ${searchPointCount}箇所`}
             </p>
           )}
         </div>

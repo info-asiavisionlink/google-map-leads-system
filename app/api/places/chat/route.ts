@@ -8,8 +8,9 @@ import {
 import {
   consumeDashboardCredits,
   DashboardCreditsError,
-  getDashboardUserCredit,
+  getAiChatToolId,
   getAiChatToolKey,
+  getDashboardUserCredit,
   hasEnoughCredit,
 } from "@/lib/dashboardCredits";
 import { fetchWebsiteText } from "@/lib/fetchWebsiteText";
@@ -221,6 +222,7 @@ export async function POST(request: NextRequest) {
     const consumeResult = await consumeDashboardCredits({
       userId,
       toolKey: getAiChatToolKey(),
+      toolId: getAiChatToolId(),
       amount: AI_CHAT_CREDIT_COST,
       resultCount: 1,
       externalRequestId: chatRow.id as string,

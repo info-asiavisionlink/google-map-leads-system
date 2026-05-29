@@ -155,6 +155,14 @@ create table if not exists search_jobs (
   completed_at timestamp with time zone
 );
 
+-- 検索ジョブ進捗統計（2025-05 追加）
+alter table search_jobs add column if not exists candidate_count integer not null default 0;
+alter table search_jobs add column if not exists duplicate_count integer not null default 0;
+alter table search_jobs add column if not exists previously_saved_count integer not null default 0;
+alter table search_jobs add column if not exists search_point_count integer not null default 0;
+alter table search_jobs add column if not exists page_fetch_count integer not null default 0;
+alter table search_jobs add column if not exists current_location_label text;
+
 create index if not exists idx_search_jobs_user_id on search_jobs (user_id);
 create index if not exists idx_search_jobs_status on search_jobs (status);
 create index if not exists idx_search_jobs_search_request_id on search_jobs (search_request_id);
