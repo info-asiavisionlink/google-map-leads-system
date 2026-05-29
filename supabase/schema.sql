@@ -131,3 +131,59 @@ create index if not exists idx_tool_usage_logs_tool_key on tool_usage_logs (tool
 comment on column search_requests.user_id is 'Supabase Auth user.id';
 comment on column search_results.user_id is 'Supabase Auth user.id';
 comment on column excluded_places.user_id is 'Supabase Auth user.id';
+
+-- 検索ジョブ（非同期検索・進捗管理）
+create table if not exists search_jobs (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null,
+  search_request_id uuid references search_requests (id) on delete cascade,
+  area text not null,
+  keyword1 text not null,
+  keyword2 text,
+  radius_m integer not null,
+  status text not null default 'pending',
+  current_step text,
+  fetched_count integer not null default 0,
+  saved_count integer not null default 0,
+  target_count integer not null default 200,
+  error_message text,
+  credit_consumed boolean not null default false,
+  access_token text,
+  credit_cost integer not null default 0,
+  created_at timestamp with time zone not null default now(),
+  updated_at timestamp with time zone not null default now(),
+  completed_at timestamp with time zone
+);
+
+create index if not exists idx_search_jobs_user_id on search_jobs (user_id);
+create index if not exists idx_search_jobs_status on search_jobs (status);
+create index if not exists idx_search_jobs_search_request_id on search_jobs (search_request_id);
+
+-- 店舗AIチャット履歴
+create table if not exists place_ai_chats (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null,
+  place_id text not null,
+  search_result_id uuid references search_results (id) on delete set null,
+  question text not null,
+  answer text not null,
+  credit_cost integer not null default 2,
+  used_website boolean not null default false,
+  created_at timestamp with time zone not null default now()
+);
+
+create index if not exists idx_place_ai_chats_user_id on place_ai_chats (user_id);
+create index if not exists idx_place_ai_chats_place_id on place_ai_chats (place_id);
+
+-- 店舗Webサイト本文キャッシュ（24時間）
+create table if not exists place_website_cache (
+  id uuid primary key default gen_random_uuid(),
+  place_id text not null unique,
+  website_url text not null,
+  page_text text,
+  fetched_at timestamp with time zone not null default now(),
+  created_at timestamp with time zone not null default now(),
+  updated_at timestamp with time zone not null default now()
+);
+
+create index if not exists idx_place_website_cache_fetched_at on place_website_cache (fetched_at desc);

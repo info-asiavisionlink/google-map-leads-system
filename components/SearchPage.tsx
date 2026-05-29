@@ -1,6 +1,6 @@
 "use client";
 
-import AuthDebugPanel from "@/components/AuthDebugPanel";
+import AIScanLoading from "@/components/AIScanLoading";
 import CopyTsvButton from "@/components/CopyTsvButton";
 import ResultsTable from "@/components/ResultsTable";
 import SearchForm, { type SearchFormValues } from "@/components/SearchForm";
@@ -20,17 +20,38 @@ import {
   API_ERROR_MESSAGE,
   CREDIT_CONSUME_FAILED_MESSAGE,
   INSUFFICIENT_CREDIT_MESSAGE,
-  MIN_CREDIT_TO_SEARCH,
-  NO_RESULTS_FOUND_MESSAGE,
-  USER_INFO_MISSING_MESSAGE,
+  NO_NEW_RESULTS_MESSAGE,
+  SEARCH_JOB_POLL_MS,
+  TOKEN_AUTH_EXPIRED_MESSAGE,
 } from "@/lib/constants";
-import type { PlaceSearchResult, SearchApiResponse } from "@/lib/types";
-import { useAuthState } from "@/lib/useAuthState";
-import { useState } from "react";
+import {
+  clearStoredAccessToken,
+  resolveAccessToken,
+} from "@/lib/toolToken";
+import type {
+  PlaceSearchResult,
+  SearchApiResponse,
+  SearchJobResponse,
+} from "@/lib/types";
+import { useToolAuth } from "@/lib/useToolAuth";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-function formatCredit(n: number): string {
-  return n.toLocaleString("ja-JP");
+function authHeaders(token: string): HeadersInit {
+  return {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
 }
+
+function bootstrapAccessToken(): void {
+  resolveAccessToken();
+}
+
+const TERMINAL_JOB_STATUSES = new Set([
+  "completed",
+  "failed",
+  "no_results",
+]);
 
 export default function SearchPage() {
   bootstrapClientAuthDebug();
@@ -43,6 +64,15 @@ export default function SearchPage() {
   } = useAuthState();
 
   const [isLoading, setIsLoading] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<SearchJobResponse["status"] | null>(
+    null
+  );
+  const [currentStep, setCurrentStep] = useState<string>("scanning");
+  const [fetchedCount, setFetchedCount] = useState(0);
+  const [savedCount, setSavedCount] = useState(0);
+  const [searchStartedAt, setSearchStartedAt] = useState<number | null>(null);
+
   const [results, setResults] = useState<PlaceSearchResult[]>([]);
   const [copyText, setCopyText] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -59,7 +89,89 @@ export default function SearchPage() {
     null
   );
 
-  const displayCredit = authState?.credit ?? getActiveCredit() ?? null;
+  const pollTimerRef = useRef<number | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current != null) {
+      window.clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const handleJobUpdate = useCallback(
+    async (data: SearchJobResponse) => {
+      setJobStatus(data.status);
+      setCurrentStep(data.currentStep);
+      setFetchedCount(data.fetchedCount);
+      setSavedCount(data.savedCount);
+      setResults(data.results);
+      setCopyText(data.copyText);
+
+      if (TERMINAL_JOB_STATUSES.has(data.status)) {
+        stopPolling();
+        setIsLoading(false);
+        setActiveJobId(null);
+
+        if (data.status === "completed") {
+          setStatus("success");
+          setMessage(data.message ?? null);
+          setSearchError(null);
+          await refreshVerify();
+        } else if (data.status === "no_results") {
+          setStatus("no_results");
+          setMessage(data.message ?? NO_NEW_RESULTS_MESSAGE);
+          setSearchError(null);
+        } else if (data.status === "failed") {
+          setStatus("error");
+          const errMsg = data.errorMessage ?? data.message ?? API_ERROR_MESSAGE;
+          if (errMsg.includes("クレジット")) {
+            setSearchError(errMsg || CREDIT_CONSUME_FAILED_MESSAGE);
+            setResults([]);
+            setCopyText("");
+          } else {
+            setSearchError(errMsg);
+          }
+        }
+      }
+    },
+    [refreshVerify, stopPolling]
+  );
+
+  const pollJob = useCallback(
+    async (jobId: string, token: string) => {
+      try {
+        const res = await fetch(`/api/search-jobs/${jobId}`, {
+          headers: authHeaders(token),
+          cache: "no-store",
+        });
+
+        if (res.status === 401) {
+          clearStoredAccessToken();
+          stopPolling();
+          setIsLoading(false);
+          setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
+          return;
+        }
+
+        if (!res.ok) {
+          return;
+        }
+
+        const data = (await res.json()) as SearchJobResponse;
+        await handleJobUpdate(data);
+      } catch (err) {
+        console.error("ジョブポーリングエラー:", err);
+      }
+    },
+    [handleJobUpdate, stopPolling]
+  );
+
+  useEffect(() => {
+    return () => stopPolling();
+  }, [stopPolling]);
+
+  const isAuthLoading = authStatus === "loading";
+  const isAuthenticated = authStatus === "authenticated" && verify !== null;
 
   async function handleSearch(values: SearchFormValues) {
     setSearchError(null);
@@ -85,35 +197,18 @@ export default function SearchPage() {
       return;
     }
 
+    stopPolling();
     setIsLoading(true);
     setMessage(null);
     setStatus(null);
     setResults([]);
     setCopyText("");
-    setDisplayCount(null);
-    setLastCreditConsumed(null);
-    setLastRemainingCredit(null);
-    setSaveWarning(null);
-
-    const requestHeaders: HeadersInit = {
-      "Content-Type": "application/json",
-      "x-user-id": userId,
-    };
-
-    const requestBody = {
-      user_id: userId,
-      current_credit: creditBalance,
-      prefecture: values.area,
-      keyword1: values.keyword1,
-      keyword2: values.keyword2 || undefined,
-    };
-
-    if (isClientAuthDebugEnabled()) {
-      logAuthStateDebug("search_request", authState, {
-        x_user_id: userId,
-        body_user_id: userId,
-      });
-    }
+    setActiveJobId(null);
+    setJobStatus("processing");
+    setCurrentStep("scanning");
+    setFetchedCount(0);
+    setSavedCount(0);
+    setSearchStartedAt(Date.now());
 
     try {
       const res = await fetch("/api/places/search", {
@@ -124,80 +219,65 @@ export default function SearchPage() {
 
       const data = (await res.json()) as SearchApiResponse;
 
-      logSearchApiResponse({
-        response_status: res.status,
-        code: data.code,
-        message: data.message,
-        credit: data.credit,
-      });
-
-      if (data.credit !== undefined && data.credit !== null) {
-        patchCredit(data.credit);
+      if (data.credit !== undefined && data.credit !== null && verify) {
+        setVerify({ ...verify, credit: data.credit });
       }
 
       if (res.status === 401 || data.code === "unauthorized") {
-        setSearchError(USER_INFO_MISSING_MESSAGE);
+        clearStoredAccessToken();
+        setSearchError(TOKEN_AUTH_EXPIRED_MESSAGE);
+        setIsLoading(false);
         return;
       }
 
       if (res.status === 402 || data.code === "insufficient_credit") {
-        setSearchError(normalizeUserFacingError(
-          data.message || INSUFFICIENT_CREDIT_MESSAGE
-        ));
-        if (data.credit !== undefined && data.credit !== null) {
-          patchCredit(data.credit);
-        }
+        setSearchError(data.message || INSUFFICIENT_CREDIT_MESSAGE);
+        setIsLoading(false);
         return;
       }
 
-      if (res.status === 500 && data.code === "consume_failed") {
-        setSearchError(CREDIT_CONSUME_FAILED_MESSAGE);
-        setResults([]);
-        setCopyText("");
+      if (data.status === "error" || (!res.ok && data.status !== "processing")) {
+        setSearchError(
+          data.code === "api_error" ? API_ERROR_MESSAGE : data.message
+        );
+        setStatus("error");
+        setIsLoading(false);
         return;
       }
 
-      if (data.status === "error" || !res.ok) {
-        const rawMessage =
-          data.code === "api_error" ? API_ERROR_MESSAGE : data.message;
-        setSearchError(normalizeUserFacingError(rawMessage));
+      if (data.status === "processing" && data.jobId) {
+        setActiveJobId(data.jobId);
+        setStatus("processing");
+        setMessage(data.message);
+
+        await pollJob(data.jobId, accessToken);
+
+        pollTimerRef.current = window.setInterval(() => {
+          void pollJob(data.jobId!, accessToken);
+        }, SEARCH_JOB_POLL_MS);
         return;
       }
 
-      setStatus(data.status);
-      setMessage(data.message);
-
-      const count =
-        data.savedCount ?? data.fetchedCount ?? data.results.length ?? 0;
-      setDisplayCount(count);
-      setLastCreditConsumed(data.creditConsumed ?? 0);
-      if (data.credit != null) setLastRemainingCredit(data.credit);
-
-      if (data.status === "no_results") {
-        setSearchError(null);
-        setResults([]);
-        setCopyText("");
-        return;
-      }
-
-      if (data.status === "success") {
-        setResults(data.results);
-        setCopyText(data.copyText);
-        setSaveWarning(data.saveWarning ?? null);
-        setSearchError(null);
-      }
-    } catch {
+      setIsLoading(false);
+    } catch (err) {
+      console.error("検索リクエストエラー:", err);
       setSearchError(API_ERROR_MESSAGE);
       setStatus("error");
-    } finally {
       setIsLoading(false);
     }
   }
 
-  return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
-      <AuthDebugPanel />
+  function handleCreditUpdate(credit: number) {
+    if (verify) {
+      setVerify({ ...verify, credit });
+    }
+  }
 
+  const showScanLoading =
+    isLoading && searchStartedAt != null && jobStatus !== "completed";
+
+  return (
+    <div className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6 lg:py-10">
       <div className="mb-4">
         <ToolAuthBar authState={authState} isLoading={isAuthLoading} />
       </div>
@@ -206,7 +286,7 @@ export default function SearchPage() {
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-600">
           営業リスト作成ツール
         </p>
-        <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
+        <h1 className="break-words text-2xl font-bold text-gray-900 sm:text-3xl">
           Googleマップ営業リスト作成
         </h1>
         <div className="mt-4 space-y-3 text-sm leading-relaxed text-gray-600">
@@ -239,79 +319,55 @@ export default function SearchPage() {
         disabled={isLoading}
       />
 
-      {isLoading && (
-        <div className="mt-6 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-          店舗情報を取得・保存しています（最大200件）。完了までしばらくお待ちください…
-        </div>
+      {showScanLoading && (
+        <AIScanLoading
+          savedCount={savedCount}
+          fetchedCount={fetchedCount}
+          currentStep={currentStep}
+          startedAt={searchStartedAt}
+        />
       )}
 
       {searchError && (
         <div
           role="alert"
-          className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+          className="mt-6 break-words rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
         >
           {searchError}
         </div>
       )}
 
-      {saveWarning && (
-        <div
-          role="status"
-          className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-        >
-          {saveWarning}（画面の検索結果とコピーはご利用いただけます）
+      {status === "no_results" && message && !searchError && (
+        <div className="mt-6 break-words rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {message || NO_NEW_RESULTS_MESSAGE}
         </div>
       )}
 
-      {(status === "success" || status === "no_results") && (
-        <div
-          className={`mt-6 rounded-lg border px-4 py-4 text-sm ${
-            status === "success"
-              ? "border-green-200 bg-green-50 text-green-900"
-              : "border-amber-200 bg-amber-50 text-amber-900"
-          }`}
-        >
-          <dl className="grid gap-3 sm:grid-cols-3">
-            <div>
-              <dt className="text-xs opacity-80">取得件数</dt>
-              <dd className="text-lg font-semibold">{displayCount ?? 0}件</dd>
-            </div>
-            <div>
-              <dt className="text-xs opacity-80">消費クレジット</dt>
-              <dd className="text-lg font-semibold">
-                {formatCredit(lastCreditConsumed ?? 0)}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs opacity-80">残クレジット</dt>
-              <dd className="text-lg font-semibold">
-                {lastRemainingCredit != null
-                  ? formatCredit(lastRemainingCredit)
-                  : "—"}
-              </dd>
-            </div>
-          </dl>
-          {message && status === "no_results" && (
-            <p className="mt-3 text-sm opacity-90">
-              {message || NO_RESULTS_FOUND_MESSAGE}
-            </p>
-          )}
+      {status === "success" && message && (
+        <div className="mt-6 break-words rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-800">
+          {message}
         </div>
       )}
 
       {results.length > 0 && (
-        <section className="mt-10">
-          <div className="sticky top-0 z-20 -mx-4 mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-gray-100/95 px-4 py-4 backdrop-blur sm:static sm:mx-0 sm:rounded-xl sm:border sm:bg-white sm:px-5 sm:shadow-sm">
-            <div className="flex items-baseline gap-3">
+        <section className="mt-10 min-w-0">
+          <div className="sticky top-0 z-20 mb-4 flex min-w-0 flex-col gap-3 border-b border-gray-200 bg-gray-100/95 px-0 py-4 backdrop-blur sm:static sm:flex-row sm:items-center sm:justify-between sm:rounded-xl sm:border sm:bg-white sm:px-5 sm:shadow-sm">
+            <div className="flex min-w-0 items-baseline gap-3">
               <h2 className="text-lg font-bold text-gray-900">取得結果</h2>
-              <span className="rounded-full bg-blue-600 px-3 py-0.5 text-sm font-bold text-white">
+              <span className="shrink-0 rounded-full bg-blue-600 px-3 py-0.5 text-sm font-bold text-white">
                 {results.length}件
+                {isLoading && activeJobId ? "（取得中…）" : ""}
               </span>
             </div>
-            <CopyTsvButton copyText={copyText} />
+            <div className="w-full sm:w-auto">
+              <CopyTsvButton copyText={copyText} />
+            </div>
           </div>
-          <ResultsTable results={results} />
+          <ResultsTable
+            results={results}
+            accessToken={accessToken}
+            onCreditUpdate={handleCreditUpdate}
+          />
         </section>
       )}
     </div>

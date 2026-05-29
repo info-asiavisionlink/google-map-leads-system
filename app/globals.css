@@ -12,7 +12,147 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html,
 body {
   background: var(--background);
   color: var(--foreground);
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+/* AI Scan radar animation */
+.ai-scan-radar {
+  position: relative;
+  width: 180px;
+  height: 180px;
+}
+
+.ai-scan-radar__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1px solid rgba(103, 232, 249, 0.35);
+}
+
+.ai-scan-radar__ring--outer {
+  animation: ai-scan-pulse 2.4s ease-in-out infinite;
+}
+
+.ai-scan-radar__ring--inner {
+  inset: 18px;
+  border-color: rgba(147, 197, 253, 0.45);
+}
+
+.ai-scan-radar__sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    rgba(34, 211, 238, 0.08) 40deg,
+    rgba(34, 211, 238, 0.45) 78deg,
+    transparent 120deg
+  );
+  animation: ai-scan-rotate 2.8s linear infinite;
+  mask: radial-gradient(circle, transparent 58%, #000 59%);
+}
+
+.ai-scan-radar__core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  border-radius: 9999px;
+  background: radial-gradient(circle, #e0f2fe 0%, #22d3ee 55%, #0369a1 100%);
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.9);
+}
+
+.ai-scan-radar__pin {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #67e8f9;
+  box-shadow: 0 0 10px rgba(103, 232, 249, 0.9);
+}
+
+.ai-scan-radar__pin--1 {
+  top: 28%;
+  left: 62%;
+  animation: ai-scan-blink 1.6s ease-in-out infinite;
+}
+
+.ai-scan-radar__pin--2 {
+  top: 58%;
+  left: 34%;
+  animation: ai-scan-blink 2s ease-in-out infinite 0.4s;
+}
+
+.ai-scan-radar__pin--3 {
+  top: 42%;
+  left: 72%;
+  animation: ai-scan-blink 1.8s ease-in-out infinite 0.8s;
+}
+
+.ai-scan-loading::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    120deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.04) 45%,
+    transparent 70%
+  );
+  animation: ai-scan-shimmer 3s linear infinite;
+  pointer-events: none;
+}
+
+.ai-scan-loading {
+  position: relative;
+}
+
+@keyframes ai-scan-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ai-scan-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.03);
+    opacity: 1;
+  }
+}
+
+@keyframes ai-scan-blink {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes ai-scan-shimmer {
+  0% {
+    transform: translateX(-30%);
+  }
+  100% {
+    transform: translateX(30%);
+  }
 }

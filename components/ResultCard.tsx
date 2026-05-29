@@ -2,6 +2,7 @@ import {
   OpeningHoursDisplay,
   ReviewsDisplay,
 } from "@/components/FormattedField";
+import PlaceAiChat from "@/components/PlaceAiChat";
 import { displayOrEmpty } from "@/lib/placeFormat";
 import type { PlaceSearchResult } from "@/lib/types";
 import type { ReactNode } from "react";
@@ -9,6 +10,8 @@ import type { ReactNode } from "react";
 type ResultCardProps = {
   row: PlaceSearchResult;
   index: number;
+  accessToken?: string | null;
+  onCreditUpdate?: (credit: number) => void;
 };
 
 function LinkButton({
@@ -23,7 +26,7 @@ function LinkButton({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex items-center rounded-md bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
+      className="inline-flex max-w-full items-center break-all rounded-md bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
     >
       {label}
     </a>
@@ -40,20 +43,27 @@ function Field({
   className?: string;
 }) {
   return (
-    <div className={className}>
+    <div className={`min-w-0 ${className}`}>
       <dt className="text-xs font-medium text-gray-500">{label}</dt>
-      <dd className="mt-0.5 text-sm text-gray-800">{children}</dd>
+      <dd className="mt-0.5 break-words text-sm text-gray-800">{children}</dd>
     </div>
   );
 }
 
-export default function ResultCard({ row, index }: ResultCardProps) {
+export default function ResultCard({
+  row,
+  index,
+  accessToken,
+  onCreditUpdate,
+}: ResultCardProps) {
   return (
-    <article className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="mb-3 flex items-start justify-between gap-2">
-        <div>
+    <article className="min-w-0 max-w-full rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
           <span className="text-xs font-medium text-blue-600">No.{index + 1}</span>
-          <h3 className="mt-0.5 text-lg font-bold text-gray-900">{row.name}</h3>
+          <h3 className="mt-0.5 break-words text-lg font-bold text-gray-900">
+            {row.name}
+          </h3>
         </div>
         {row.rating != null && (
           <div className="shrink-0 rounded-lg bg-amber-50 px-2.5 py-1 text-center">
@@ -65,11 +75,11 @@ export default function ResultCard({ row, index }: ResultCardProps) {
         )}
       </div>
 
-      <dl className="grid gap-3">
+      <dl className="grid min-w-0 gap-3">
         <Field label="住所">{displayOrEmpty(row.address)}</Field>
         <Field label="電話番号">{displayOrEmpty(row.phoneNumber)}</Field>
         <Field label="メールアドレス">{displayOrEmpty(row.email)}</Field>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex min-w-0 flex-wrap gap-2">
           {row.websiteUrl ? (
             <LinkButton href={row.websiteUrl} label="Webサイト" />
           ) : (
@@ -95,6 +105,12 @@ export default function ResultCard({ row, index }: ResultCardProps) {
           <code className="break-all text-xs text-gray-500">{row.placeId}</code>
         </Field>
       </dl>
+
+      <PlaceAiChat
+        place={row}
+        accessToken={accessToken ?? null}
+        onCreditUpdate={onCreditUpdate}
+      />
     </article>
   );
 }

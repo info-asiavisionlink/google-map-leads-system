@@ -30,7 +30,7 @@ export default function CopyTsvButton({
       type="button"
       onClick={handleCopy}
       disabled={disabled || !copyText}
-      className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+      className="w-full rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
     >
       {copied ? "コピーしました" : "コピー"}
     </button>

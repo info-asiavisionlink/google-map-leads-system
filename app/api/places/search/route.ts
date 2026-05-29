@@ -1,61 +1,17 @@
-import { NextRequest, NextResponse } from "next/server";
-import { authDebugError, authDebugInfo } from "@/lib/authDebug";
+import { after, NextRequest, NextResponse } from "next/server";
 import {
-  API_ERROR_MESSAGE,
-  calculateCreditCost,
-  CREDIT_CONSUME_FAILED_MESSAGE,
-  EXHAUSTED_NO_NEW_RESULTS_MESSAGE,
   INSUFFICIENT_CREDIT_MESSAGE,
-  MIN_CREDIT_TO_SEARCH,
-  NO_RESULTS_FOUND_MESSAGE,
-  SAVE_RESULTS_FAILED_MESSAGE,
-  SEARCH_BATCH_SIZE,
-  SEARCH_TARGET_RESULTS,
-  USER_INFO_MISSING_MESSAGE,
+  MAX_RESULTS,
+  RADIUS_OPTIONS,
+  TOKEN_AUTH_EXPIRED_MESSAGE,
 } from "@/lib/constants";
 import {
-  consumeDashboardCredits,
   DashboardCreditsError,
   hasEnoughCredit,
 } from "@/lib/dashboardCredits";
-import {
-  buildSearchQuery,
-  geocodePrefecture,
-  getPlaceDetails,
-  toPlaceSearchResult,
-  type TextSearchPlace,
-} from "@/lib/googleMaps";
-import { getMaxSearchRadiusKm } from "@/lib/prefectureSearchRadius";
-import { PREFECTURES } from "@/lib/prefectures";
-import {
-  extractSearchUserId,
-  resolveSearchAuthContext,
-  type SearchAuthBody,
-} from "@/lib/searchAuth";
-import {
-  loadSearchProgressRecord,
-  progressRowToSpiralPosition,
-  upsertSearchProgress,
-} from "@/lib/searchProgress";
-import {
-  createSpiralSearcher,
-  FIXED_SEARCH_RADIUS_M,
-} from "@/lib/spiralSearch";
+import { processSearchJob } from "@/lib/searchProcessor";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import {
-  completeSearchRequest,
-  getPreviouslySavedPlaceIdsForUser,
-  insertSearchResultsBatch,
-  logSearchResultsSaveFailure,
-  logSupabasePersistenceError,
-  placeSearchResultToRow,
-} from "@/lib/searchPersistence";
-import { buildTsv } from "@/lib/tsv";
-import type {
-  PlaceSearchResult,
-  SearchApiResponse,
-  SearchStopReason,
-} from "@/lib/types";
+import type { SearchApiResponse, SearchStartResponse } from "@/lib/types";
 
 /** 1回の検索ボタンで目指す新規保存件数（100件で止めない・必ず200を目標） */
 const TARGET_RESULTS = SEARCH_TARGET_RESULTS;
@@ -77,9 +33,9 @@ type SearchBody = SearchAuthBody & {
 };
 
 function jsonResponse(
-  body: SearchApiResponse,
+  body: SearchApiResponse | SearchStartResponse,
   status = 200
-): NextResponse<SearchApiResponse> {
+) {
   return NextResponse.json(body, { status });
 }
 
@@ -93,82 +49,6 @@ function validateBody(body: SearchBody): string | null {
   }
   if (!keyword1) return "大カテゴリー・業種を入力してください";
   return null;
-}
-
-function resolvePrefecture(body: SearchBody): string {
-  return (body.area?.trim() || body.prefecture?.trim()) as string;
-}
-
-async function getExcludedPlaceIds(userId: string): Promise<Set<string>> {
-  const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("excluded_places")
-    .select("place_id")
-    .eq("user_id", userId);
-
-  if (error) {
-    console.error("excluded_places 取得エラー:", error);
-    throw new Error("除外リストの取得に失敗しました");
-  }
-
-  return new Set((data ?? []).map((row) => row.place_id as string));
-}
-
-async function markSearchRequestFailed(
-  searchRequestId: string,
-  resultCount: number,
-  params?: { latitude?: number; longitude?: number; radiusM?: number }
-): Promise<void> {
-  const supabase = getSupabaseAdmin();
-  await supabase
-    .from("search_requests")
-    .update({
-      status: "failed",
-      result_count: resultCount,
-      ...(params?.latitude != null ? { latitude: params.latitude } : {}),
-      ...(params?.longitude != null ? { longitude: params.longitude } : {}),
-      ...(params?.radiusM != null ? { radius_m: params.radiusM } : {}),
-    })
-    .eq("id", searchRequestId);
-}
-
-function logSearchLoop(meta: {
-  saved: number;
-  total_saved: number;
-  step: number;
-}): void {
-  if (process.env.NODE_ENV === "production") return;
-  console.log("[search-loop]", meta);
-}
-
-function logSearchComplete(meta: {
-  totalSaved: number;
-  currentStep: number;
-  currentDirection: number;
-  spiralDistanceKm: number;
-  stopReason: SearchStopReason;
-}): void {
-  if (process.env.NODE_ENV === "production") return;
-
-  console.log({
-    totalSaved: meta.totalSaved,
-    currentStep: meta.currentStep,
-    currentDirection: meta.currentDirection,
-    spiralDistanceKm: meta.spiralDistanceKm,
-    stopReason: meta.stopReason,
-  });
-}
-
-function buildSuccessMessage(params: {
-  savedCount: number;
-  creditConsumed: number;
-  creditAfter: number;
-}): string {
-  return [
-    `取得件数: ${params.savedCount}件`,
-    `消費クレジット: ${params.creditConsumed}`,
-    `残クレジット: ${params.creditAfter.toLocaleString("ja-JP")}`,
-  ].join(" / ");
 }
 
 export async function POST(request: NextRequest) {
@@ -264,443 +144,92 @@ export async function POST(request: NextRequest) {
 
   let searchRequestId: string | null = null;
 
-  try {
-    const center = await geocodePrefecture(prefecture);
-    const maxRadiusKm = getMaxSearchRadiusKm(prefecture);
-    const startPosition = progressRowToSpiralPosition(progressRecord, center);
-
-    const { data: pendingRequest, error: pendingError } = await supabase
-      .from("search_requests")
-      .insert({
-        user_id: userId,
-        area: prefecture,
-        keyword1,
-        keyword2,
-        radius_m: FIXED_SEARCH_RADIUS_M,
-        latitude: startPosition.lastLatitude,
-        longitude: startPosition.lastLongitude,
-        status: "pending",
-        result_count: 0,
-      })
-      .select("id")
-      .single();
-
-    if (pendingError || !pendingRequest) {
-      console.error("search_requests insert error:", {
-        code: pendingError?.code,
-        message: pendingError?.message,
-        details: pendingError?.details,
-        hint: pendingError?.hint,
-      });
-      throw new Error("検索履歴の作成に失敗しました");
-    }
-
-    searchRequestId = pendingRequest.id as string;
-    const requestId = searchRequestId;
-
-    const query = buildSearchQuery(keyword1, keyword2 ?? undefined, prefecture);
-    const excludedPlaceIds = await getExcludedPlaceIds(userId);
-    const previouslySavedPlaceIds =
-      await getPreviouslySavedPlaceIdsForUser(supabase, userId);
-
-    const searchExcludedPlaceIds = new Set([
-      ...excludedPlaceIds,
-      ...previouslySavedPlaceIds,
-    ]);
-
-    const searcher = createSpiralSearcher({
-      query,
-      center,
-      maxExplorationRadiusKm: maxRadiusKm,
-      startPosition,
-      excludedPlaceIds: searchExcludedPlaceIds,
-    });
-
-    const savedResults: PlaceSearchResult[] = [];
-    const seenPlaceIds = new Set<string>();
-    const activeProgressId = progressRecord?.id;
-    const lifetimeSavedBaseline = progressRecord?.total_saved_count ?? 0;
-    let duplicateExclusionCount = 0;
-    let saveFailed = false;
-    let stopReason: SearchStopReason | null = null;
-    const searchStartedAt = Date.now();
-
-    function buildRuntimeExcluded(): Set<string> {
-      return new Set([
-        ...seenPlaceIds,
-        ...previouslySavedPlaceIds,
-        ...excludedPlaceIds,
-      ]);
-    }
-
-    function isDuplicatePlaceId(placeId: string): boolean {
-      return (
-        previouslySavedPlaceIds.has(placeId) ||
-        seenPlaceIds.has(placeId) ||
-        excludedPlaceIds.has(placeId)
-      );
-    }
-
-    function filterNewPlaces(batch: TextSearchPlace[]): TextSearchPlace[] {
-      const unique: TextSearchPlace[] = [];
-      for (const place of batch) {
-        const placeId = place.placeId;
-        if (!placeId) continue;
-
-        if (isDuplicatePlaceId(placeId)) {
-          duplicateExclusionCount++;
-          seenPlaceIds.add(placeId);
-          continue;
-        }
-
-        seenPlaceIds.add(placeId);
-        unique.push(place);
-      }
-      return unique;
-    }
-
-    // 50件ずつ取得・保存。200件到達 or 都道府県全域探索完了まで継続（空地点・重複のみでは止めない）
-    while (savedResults.length < TARGET_RESULTS) {
-      if (Date.now() - searchStartedAt >= TIMEOUT_NEAR_LIMIT_MS) {
-        stopReason = "timeout_near_limit";
-        break;
-      }
-
-      const batchFetchLimit = Math.min(
-        BATCH_SIZE,
-        TARGET_RESULTS - savedResults.length
-      );
-      const batchCandidates = await searcher.fetchNextBatch(
-        batchFetchLimit,
-        buildRuntimeExcluded()
-      );
-
-      if (batchCandidates.length === 0) {
-        if (searcher.isExhausted()) {
-          stopReason = "prefecture_fully_scanned";
-          break;
-        }
-        continue;
-      }
-
-      const newPlaces = filterNewPlaces(batchCandidates);
-
-      if (newPlaces.length === 0) {
-        logSearchLoop({
-          saved: 0,
-          total_saved: savedResults.length,
-          step: searcher.getPosition().currentStep,
-        });
-        if (searcher.isExhausted()) {
-          stopReason = "prefecture_fully_scanned";
-          break;
-        }
-        continue;
-      }
-
-      const remainingSlots = TARGET_RESULTS - savedResults.length;
-      const candidatesToProcess = newPlaces.slice(0, remainingSlots);
-
-      const detailsList = await Promise.all(
-        candidatesToProcess.map((place) => getPlaceDetails(place.placeId))
-      );
-      const batchResults = detailsList.map(toPlaceSearchResult);
-
-      const resultRows = batchResults
-        .map((r) => placeSearchResultToRow(r, requestId, userId))
-        .filter((row): row is NonNullable<typeof row> => row !== null);
-
-      const insertOutcome = await insertSearchResultsBatch(supabase, resultRows);
-
-      if (!insertOutcome.ok) {
-        saveFailed = true;
-        stopReason = "save_error";
-        logSearchResultsSaveFailure(insertOutcome.error, {
-          attemptedCount: resultRows.length,
-          sampleRow: resultRows[0] ?? null,
-          duplicateExclusionCount,
-          previouslySavedPlaceIdCount: previouslySavedPlaceIds.size,
-        });
-        break;
-      }
-
-      for (const row of resultRows) {
-        previouslySavedPlaceIds.add(row.place_id);
-        seenPlaceIds.add(row.place_id);
-        searchExcludedPlaceIds.add(row.place_id);
-      }
-
-      savedResults.push(...batchResults);
-
-      await upsertSearchProgress(supabase, {
-        userId,
-        area: prefecture,
-        keyword1,
-        keyword2,
-        position: searcher.getPosition(),
-        totalSavedCount: lifetimeSavedBaseline + savedResults.length,
-        isExhausted: false,
-        progressId: activeProgressId,
-      });
-
-      logSearchLoop({
-        saved: resultRows.length,
-        total_saved: savedResults.length,
-        step: searcher.getPosition().currentStep,
-      });
-
-      if (savedResults.length >= TARGET_RESULTS) {
-        stopReason = "reached_target";
-        break;
-      }
-    }
-
-    const finalPosition = searcher.getPosition();
-    const spiralDistanceKm = searcher.getSpiralDistanceKm();
-
-    if (!stopReason) {
-      if (savedResults.length >= TARGET_RESULTS) {
-        stopReason = "reached_target";
-      } else if (searcher.isExhausted()) {
-        stopReason = "prefecture_fully_scanned";
-      }
-    }
-
-    logSearchComplete({
-      totalSaved: savedResults.length,
-      currentStep: finalPosition.currentStep,
-      currentDirection: finalPosition.currentDirection,
-      spiralDistanceKm,
-      stopReason: stopReason ?? "prefecture_fully_scanned",
-    });
-
-    const isRegionExhausted =
-      stopReason === "prefecture_fully_scanned" && searcher.isExhausted();
-
-    await upsertSearchProgress(supabase, {
-      userId,
-      area: prefecture,
+  const { data: searchRequest, error: requestInsertError } = await supabase
+    .from("search_requests")
+    .insert({
+      user_id: userId,
+      area,
       keyword1,
       keyword2,
-      position: finalPosition,
-      totalSavedCount: lifetimeSavedBaseline + savedResults.length,
-      isExhausted: isRegionExhausted,
-      progressId: activeProgressId,
-    });
+      radius_m: radiusM,
+      result_count: 0,
+      status: "pending",
+    })
+    .select("id")
+    .single();
 
-    const requestMeta = {
-      latitude: finalPosition.lastLatitude,
-      longitude: finalPosition.lastLongitude,
-      radiusM: FIXED_SEARCH_RADIUS_M,
-    };
-
-    if (savedResults.length === 0) {
-      const noResultMessage = isRegionExhausted
-        ? EXHAUSTED_NO_NEW_RESULTS_MESSAGE
-        : NO_RESULTS_FOUND_MESSAGE;
-
-      await supabase
-        .from("search_requests")
-        .update({
-          status: saveFailed ? "failed" : "no_results",
-          result_count: 0,
-          ...requestMeta,
-        })
-        .eq("id", requestId);
-
-      if (saveFailed) {
-        return jsonResponse(
-          {
-            status: "error",
-            message: SAVE_RESULTS_FAILED_MESSAGE,
-            results: [],
-            copyText: "",
-            credit: currentCredit,
-            fetchedCount: 0,
-            savedCount: 0,
-            creditConsumed: 0,
-            stopReason: "save_error",
-            code: "save_failed",
-          },
-          500
-        );
-      }
-
-      return jsonResponse({
-        status: "no_results",
-        message: noResultMessage,
-        results: [],
-        copyText: "",
-        credit: currentCredit,
-        fetchedCount: 0,
-        savedCount: 0,
-        creditConsumed: 0,
-        stopReason: stopReason ?? "prefecture_fully_scanned",
-      });
-    }
-
-    const savedCount = savedResults.length;
-    const actualCreditCost = calculateCreditCost(savedCount);
-
-    if (!hasEnoughCredit(currentCredit, actualCreditCost)) {
-      await markSearchRequestFailed(requestId, savedCount, requestMeta);
-      return jsonResponse(
-        {
-          status: "error",
-          message: INSUFFICIENT_CREDIT_MESSAGE,
-          results: savedResults,
-          copyText: buildTsv(savedResults),
-          credit: currentCredit,
-          fetchedCount: savedCount,
-          savedCount,
-          resultCount: savedCount,
-          creditConsumed: actualCreditCost,
-          stopReason: "credit_shortage",
-          code: "insufficient_credit",
-        },
-        402
-      );
-    }
-
-    let creditAfter: number;
-    let creditBeforeConsume: number | undefined;
-    try {
-      const consumeResult = await consumeDashboardCredits({
-        userId,
-        amount: actualCreditCost,
-        resultCount: savedCount,
-        externalRequestId: requestId,
-      });
-      creditAfter = consumeResult.credit;
-      creditBeforeConsume = consumeResult.creditBefore;
-    } catch (consumeErr) {
-      authDebugError(
-        "api-places-search",
-        { failure: "dashboard_supabase_consume", user_id: userId },
-        consumeErr
-      );
-      await markSearchRequestFailed(requestId, savedCount, requestMeta);
-
-      if (
-        consumeErr instanceof DashboardCreditsError &&
-        consumeErr.code === "insufficient_credit"
-      ) {
-        return jsonResponse(
-          {
-            status: "error",
-            message: consumeErr.message,
-            results: savedResults,
-            copyText: buildTsv(savedResults),
-            credit: currentCredit,
-            fetchedCount: savedCount,
-            savedCount,
-            resultCount: savedCount,
-            creditConsumed: actualCreditCost,
-            stopReason: "credit_shortage",
-            code: "insufficient_credit",
-          },
-          402
-        );
-      }
-
-      const detail =
-        consumeErr instanceof DashboardCreditsError
-          ? consumeErr.message
-          : CREDIT_CONSUME_FAILED_MESSAGE;
-      return jsonResponse(
-        {
-          status: "error",
-          message: detail,
-          results: savedResults,
-          copyText: buildTsv(savedResults),
-          credit: currentCredit,
-          fetchedCount: savedCount,
-          savedCount,
-          resultCount: savedCount,
-          creditConsumed: actualCreditCost,
-          stopReason: "credit_shortage",
-          code: "consume_failed",
-        },
-        500
-      );
-    }
-
-    const saveWarnings: string[] = [];
-
-    if (saveFailed) {
-      await markSearchRequestFailed(requestId, savedCount, requestMeta);
-      saveWarnings.push(SAVE_RESULTS_FAILED_MESSAGE);
-    } else {
-      const newPlaceIds = savedResults.map((r) => r.placeId);
-      const excludedRows = newPlaceIds.map((placeId) => ({
-        user_id: userId,
-        place_id: placeId,
-        first_seen_search_request_id: requestId,
-      }));
-
-      const { error: excludedError } = await supabase
-        .from("excluded_places")
-        .upsert(excludedRows, { onConflict: "user_id,place_id" });
-
-      if (excludedError) {
-        logSupabasePersistenceError(
-          "excluded_places upsert error",
-          excludedError,
-          { rowCount: excludedRows.length, sampleRow: excludedRows[0] }
-        );
-      }
-
-      const completeError = await completeSearchRequest(supabase, requestId, {
-        resultCount: savedCount,
-        latitude: requestMeta.latitude,
-        longitude: requestMeta.longitude,
-        radiusM: requestMeta.radiusM,
-      });
-
-      if (completeError) {
-        saveWarnings.push("検索履歴の更新に失敗しました。");
-      }
-    }
-
-    const message = buildSuccessMessage({
-      savedCount,
-      creditConsumed: actualCreditCost,
-      creditAfter,
-    });
-
-    const responseResults = savedResults.slice(0, TARGET_RESULTS);
-
-    return jsonResponse({
-      status: "success",
-      message,
-      results: responseResults,
-      copyText: buildTsv(responseResults),
-      credit: creditAfter,
-      creditBefore: creditBeforeConsume,
-      creditAfter,
-      fetchedCount: savedCount,
-      savedCount,
-      resultCount: savedCount,
-      creditConsumed: actualCreditCost,
-      stopReason: stopReason ?? "reached_target",
-      saveWarning: saveWarnings.length > 0 ? saveWarnings.join(" ") : null,
-    });
-  } catch (err) {
-    console.error("POST /api/places/search エラー:", err);
-    if (searchRequestId) {
-      await markSearchRequestFailed(searchRequestId, 0).catch(() => undefined);
-    }
+  if (requestInsertError || !searchRequest) {
+    console.error("search_requests 保存エラー:", requestInsertError);
     return jsonResponse(
       {
         status: "error",
-        message: API_ERROR_MESSAGE,
+        message: "検索の開始に失敗しました",
         results: [],
         copyText: "",
-        credit: currentCredit,
-        stopReason: "google_api_error",
         code: "api_error",
       },
       500
     );
   }
+
+  const searchRequestId = searchRequest.id as string;
+
+  const { data: job, error: jobError } = await supabase
+    .from("search_jobs")
+    .insert({
+      user_id: userId,
+      search_request_id: searchRequestId,
+      area,
+      keyword1,
+      keyword2,
+      radius_m: radiusM,
+      status: "pending",
+      current_step: "scanning",
+      fetched_count: 0,
+      saved_count: 0,
+      target_count: MAX_RESULTS,
+      access_token: accessToken,
+      credit_cost: creditCost,
+    })
+    .select("id")
+    .single();
+
+  if (jobError || !job) {
+    console.error("search_jobs 保存エラー:", jobError);
+    return jsonResponse(
+      {
+        status: "error",
+        message: "検索ジョブの作成に失敗しました",
+        results: [],
+        copyText: "",
+        code: "api_error",
+      },
+      500
+    );
+  }
+
+  const jobId = job.id as string;
+
+  after(async () => {
+    await processSearchJob(jobId);
+  });
+
+  const response: SearchStartResponse = {
+    jobId,
+    searchRequestId,
+    status: "processing",
+    message: "検索を開始しました。店舗情報を取得しています…",
+  };
+
+  return jsonResponse(
+    {
+      status: "processing",
+      message: response.message,
+      results: [],
+      copyText: "",
+      jobId,
+      credit: currentCredit,
+    },
+    202
+  );
 }

@@ -1,10 +1,13 @@
 import { OpeningHoursDisplay, ReviewsDisplay } from "@/components/FormattedField";
+import PlaceAiChat from "@/components/PlaceAiChat";
 import { displayOrEmpty } from "@/lib/placeFormat";
 import type { PlaceSearchResult } from "@/lib/types";
 import ResultCard from "./ResultCard";
 
 type ResultsTableProps = {
   results: PlaceSearchResult[];
+  accessToken?: string | null;
+  onCreditUpdate?: (credit: number) => void;
 };
 
 function CellLink({
@@ -19,7 +22,7 @@ function CellLink({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex rounded bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
+      className="inline-flex max-w-full break-all rounded bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
     >
       {label}
     </a>
@@ -42,26 +45,35 @@ const COLUMNS: { key: string; label: string; minW: string }[] = [
   { key: "category", label: "業種", minW: "min-w-[120px]" },
   { key: "status", label: "ステータス", minW: "min-w-[88px]" },
   { key: "placeId", label: "place_id", minW: "min-w-[140px]" },
+  { key: "ai", label: "AI", minW: "min-w-[120px]" },
 ];
 
-export default function ResultsTable({ results }: ResultsTableProps) {
+export default function ResultsTable({
+  results,
+  accessToken,
+  onCreditUpdate,
+}: ResultsTableProps) {
   if (results.length === 0) {
     return null;
   }
 
   return (
     <>
-      {/* スマホ: カード */}
-      <div className="space-y-4 md:hidden">
+      <div className="min-w-0 space-y-4 md:hidden">
         {results.map((row, index) => (
-          <ResultCard key={row.placeId} row={row} index={index} />
+          <ResultCard
+            key={row.placeId}
+            row={row}
+            index={index}
+            accessToken={accessToken}
+            onCreditUpdate={onCreditUpdate}
+          />
         ))}
       </div>
 
-      {/* PC: テーブル */}
-      <div className="hidden md:block">
+      <div className="hidden min-w-0 md:block">
         <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
-          <table className="min-w-[1400px] border-collapse text-left text-sm">
+          <table className="min-w-[1500px] border-collapse text-left text-sm">
             <thead>
               <tr className="border-b border-gray-200 bg-gray-50">
                 {COLUMNS.map((col) => (
@@ -76,14 +88,14 @@ export default function ResultsTable({ results }: ResultsTableProps) {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {results.map((row, index) => (
-                <tr key={row.placeId} className="hover:bg-blue-50/30">
+                <tr key={row.placeId} className="align-top hover:bg-blue-50/30">
                   <td className="whitespace-nowrap px-3 py-3 font-medium text-gray-900">
                     {index + 1}
                   </td>
-                  <td className="px-3 py-3 font-semibold text-gray-900">
+                  <td className="max-w-[180px] break-words px-3 py-3 font-semibold text-gray-900">
                     {row.name}
                   </td>
-                  <td className="px-3 py-3 text-gray-700">
+                  <td className="max-w-[220px] break-words px-3 py-3 text-gray-700">
                     {displayOrEmpty(row.address)}
                   </td>
                   <td className="whitespace-nowrap px-3 py-3 text-gray-700">
@@ -108,25 +120,32 @@ export default function ResultsTable({ results }: ResultsTableProps) {
                   <td className="whitespace-nowrap px-3 py-3 text-gray-700">
                     {row.reviewCount ?? "-"}
                   </td>
-                  <td className="min-w-[200px] max-w-[260px] px-3 py-3 align-top text-gray-700">
+                  <td className="min-w-[200px] max-w-[260px] break-words px-3 py-3 align-top text-gray-700">
                     <ReviewsDisplay text={row.reviewsText} />
                   </td>
-                  <td className="min-w-[200px] max-w-[240px] px-3 py-3 align-top text-gray-700">
+                  <td className="min-w-[200px] max-w-[240px] break-words px-3 py-3 align-top text-gray-700">
                     <OpeningHoursDisplay text={row.regularOpeningHours} />
                   </td>
-                  <td className="px-3 py-3 text-gray-700">
+                  <td className="break-words px-3 py-3 text-gray-700">
                     {displayOrEmpty(row.closedDays)}
                   </td>
-                  <td className="px-3 py-3 text-gray-700">
+                  <td className="break-words px-3 py-3 text-gray-700">
                     {displayOrEmpty(row.category)}
                   </td>
                   <td className="whitespace-nowrap px-3 py-3 text-gray-700">
                     {displayOrEmpty(row.businessStatus)}
                   </td>
                   <td className="px-3 py-3">
-                    <code className="block max-w-[140px] truncate font-mono text-xs text-gray-500">
+                    <code className="block max-w-[140px] break-all font-mono text-xs text-gray-500">
                       {row.placeId}
                     </code>
+                  </td>
+                  <td className="min-w-[220px] px-3 py-3">
+                    <PlaceAiChat
+                      place={row}
+                      accessToken={accessToken ?? null}
+                      onCreditUpdate={onCreditUpdate}
+                    />
                   </td>
                 </tr>
               ))}

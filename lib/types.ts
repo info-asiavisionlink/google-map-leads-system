@@ -22,38 +22,61 @@ export type PlaceSearchResult = {
   photoNames: string;
 };
 
-export type SearchStopReason =
-  | "reached_target"
-  | "prefecture_fully_scanned"
-  | "timeout_near_limit"
-  | "google_api_error"
-  | "save_error"
-  | "credit_shortage";
+export type SearchJobStatus =
+  | "pending"
+  | "processing"
+  | "scanning"
+  | "fetching"
+  | "details"
+  | "deduping"
+  | "saving"
+  | "completed"
+  | "failed"
+  | "no_results";
+
+export type SearchJobResponse = {
+  jobId: string;
+  searchRequestId?: string;
+  status: SearchJobStatus;
+  currentStep: string;
+  fetchedCount: number;
+  savedCount: number;
+  targetCount: number;
+  results: PlaceSearchResult[];
+  copyText: string;
+  message?: string;
+  credit?: number | null;
+  errorMessage?: string;
+};
+
+export type SearchStartResponse = {
+  jobId: string;
+  searchRequestId: string;
+  status: SearchJobStatus;
+  message: string;
+};
 
 export type SearchApiResponse = {
-  status: "success" | "no_results" | "error";
+  status: "success" | "no_results" | "error" | "processing";
   message: string;
   stopReason?: SearchStopReason;
   results: PlaceSearchResult[];
   copyText: string;
   credit?: number | null;
-  /** @deprecated savedCount を使用 */
-  resultCount?: number;
-  fetchedCount?: number;
-  savedCount?: number;
-  saveFailedCount?: number;
-  duplicateExclusionCount?: number;
-  currentSearchLocation?: string;
-  nextResumeLocation?: string;
-  creditConsumed?: number;
-  creditBefore?: number;
-  creditAfter?: number;
-  /** DB保存に失敗した場合の警告（検索結果は results に含まれる） */
-  saveWarning?: string | null;
+  jobId?: string;
   code?:
     | "unauthorized"
     | "insufficient_credit"
     | "api_error"
     | "consume_failed"
     | "save_failed";
+};
+
+export type PlaceChatApiResponse = {
+  status: "success" | "error";
+  message: string;
+  answer?: string;
+  credit?: number | null;
+  usedWebsite?: boolean;
+  code?: "unauthorized" | "insufficient_credit" | "api_error";
 };

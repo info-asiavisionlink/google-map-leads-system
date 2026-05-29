@@ -1,24 +1,5 @@
 import { NextRequest } from "next/server";
-import {
-  authDebugError,
-  authDebugInfo,
-  getAuthSystemApiUrlInfo,
-  maskToken,
-  resolveAuthSystemApiUrl,
-  safeJsonForLog,
-} from "@/lib/authDebug";
-import {
-  DASHBOARD_SUPABASE_NOT_CONFIGURED_MESSAGE,
-  INSUFFICIENT_CREDIT_MESSAGE,
-  TOOL_KEY,
-  TOOL_NAME,
-  USER_INFO_MISSING_MESSAGE,
-} from "@/lib/constants";
-import {
-  getDashboardSupabaseAdmin,
-  getDashboardSupabaseConfig,
-  isDashboardSupabaseConfigured,
-} from "@/lib/dashboardSupabase/server";
+import { TOOL_AI_CHAT_KEY, TOOL_KEY } from "@/lib/constants";
 import {
   extractErrorFromBody,
   getBearerTokenFromHeader,
@@ -170,68 +151,29 @@ type ProfileCreditRow = {
   credit: number | null;
 };
 
-function parseProfileCredit(value: unknown): number | null {
-  if (typeof value === "number" && !Number.isNaN(value)) return value;
-  return null;
+export function getAiChatToolKey(): string {
+  return process.env.NEXT_PUBLIC_TOOL_AI_CHAT_KEY?.trim() || TOOL_AI_CHAT_KEY;
 }
 
-function logDashboardSupabaseConfig(): void {
-  const config = getDashboardSupabaseConfig();
-  authDebugInfo("dashboard-supabase-config", {
-    configured: isDashboardSupabaseConfigured(),
-    env_source: config?.envSource ?? "(none)",
-    url_exists: Boolean(config?.url),
-    service_role_key_exists: Boolean(config?.serviceRoleKey),
-  });
-}
+/** 共通ダッシュボード POST /api/credits/consume（credit_cost は送らない） */
+export async function consumeDashboardCredits(
+  accessToken: string,
+  externalRequestId: string,
+  toolKey = getToolKey()
+): Promise<ConsumeResult> {
+  const baseUrl = getDashboardBaseUrl();
 
-/** 共通ダッシュボード Supabase profiles からクレジット残高を取得 */
-export async function getDashboardUserCredit(userId: string): Promise<number> {
-  if (!userId.trim()) {
-    throw new DashboardCreditsError(USER_INFO_MISSING_MESSAGE, 401, "unauthorized");
-  }
-
-  logDashboardSupabaseConfig();
-
-  const supabase = getDashboardSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("id, credit")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (error) {
-    authDebugError("dashboard-credit-fetch", {
-      user_id: userId,
-      error: error.message,
-    });
-    throw new DashboardCreditsError(
-      "クレジット残高の取得に失敗しました。",
-      500,
-      "credit_fetch_failed"
-    );
-  }
-
-  if (!data) {
-    throw new DashboardCreditsError(
-      "ユーザーが見つかりませんでした。",
-      404,
-      "user_not_found"
-    );
-  }
-
-  const credit = parseProfileCredit((data as ProfileCreditRow).credit);
-  if (credit === null) {
-    throw new DashboardCreditsError(
-      "クレジット残高の取得に失敗しました。",
-      500,
-      "credit_fetch_failed"
-    );
-  }
-
-  authDebugInfo("dashboard-credit-fetch", {
-    user_id: userId,
-    credit_before: credit,
+  const res = await fetch(`${baseUrl}/api/credits/consume`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    cache: "no-store",
+    body: JSON.stringify({
+      tool_key: toolKey,
+      external_request_id: externalRequestId,
+    }),
   });
 
   return credit;
