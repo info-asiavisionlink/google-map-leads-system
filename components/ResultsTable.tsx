@@ -4,7 +4,7 @@ import { OpeningHoursDisplay, ReviewsDisplay } from "@/components/FormattedField
 import PlaceAiChat from "@/components/PlaceAiChat";
 import { displayOrEmpty } from "@/lib/placeFormat";
 import type { PlaceSearchResult } from "@/lib/types";
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import ResultCard from "./ResultCard";
 
 type ResultsTableProps = {
@@ -51,17 +51,32 @@ const COLUMNS: { key: string; label: string; minW: string }[] = [
   { key: "ai", label: "AI", minW: "min-w-[96px]" },
 ];
 
+const COLUMN_COUNT = COLUMNS.length;
+
 export default function ResultsTable({
   results,
   userId,
   onCreditUpdate,
 }: ResultsTableProps) {
   const [openChatPlaceId, setOpenChatPlaceId] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [panelWidth, setPanelWidth] = useState<number | undefined>();
 
-  const openChatPlace =
-    openChatPlaceId != null
-      ? results.find((row) => row.placeId === openChatPlaceId) ?? null
-      : null;
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const updateWidth = () => setPanelWidth(el.clientWidth);
+    updateWidth();
+
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  function handleOpenChat(placeId: string) {
+    setOpenChatPlaceId((current) => (current === placeId ? null : placeId));
+  }
 
   if (results.length === 0) {
     return null;
@@ -77,12 +92,16 @@ export default function ResultsTable({
             index={index}
             userId={userId}
             onCreditUpdate={onCreditUpdate}
+            isChatOpen={openChatPlaceId === row.placeId}
+            onChatOpenChange={(open) =>
+              setOpenChatPlaceId(open ? row.placeId : null)
+            }
           />
         ))}
       </div>
 
-      <div className="hidden min-w-0 md:block">
-        <div className="overflow-x-auto rounded-t-xl border border-b-0 border-gray-200 bg-white shadow-sm">
+      <div ref={containerRef} className="hidden min-w-0 md:block">
+        <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
           <table className="min-w-[1500px] border-collapse text-left text-sm">
             <thead>
               <tr className="border-b border-gray-200 bg-gray-50">
@@ -152,35 +171,47 @@ export default function ResultsTable({
                       </code>
                     </td>
                     <td className="whitespace-nowrap px-3 py-3">
-                      <PlaceAiChat
-                        place={row}
-                        userId={userId ?? null}
-                        triggerOnly
-                        onOpenRequest={() =>
-                          setOpenChatPlaceId((current) =>
-                            current === row.placeId ? null : row.placeId
-                          )
-                        }
-                      />
+                      <button
+                        type="button"
+                        onClick={() => handleOpenChat(row.placeId)}
+                        className={`inline-flex h-10 items-center justify-center whitespace-nowrap rounded-lg border px-3 text-sm font-semibold transition ${
+                          openChatPlaceId === row.placeId
+                            ? "border-blue-400 bg-blue-100 text-blue-900"
+                            : "border-blue-200 bg-blue-50 text-blue-800 hover:bg-blue-100"
+                        }`}
+                      >
+                        AIに質問
+                      </button>
                     </td>
                   </tr>
+
+                  {openChatPlaceId === row.placeId && (
+                    <tr className="bg-blue-50/30">
+                      <td colSpan={COLUMN_COUNT} className="!p-0">
+                        <div
+                          className="sticky left-0 border-y border-blue-200 bg-white p-4 sm:p-5"
+                          style={
+                            panelWidth != null
+                              ? { width: `${panelWidth}px`, maxWidth: `${panelWidth}px` }
+                              : { width: "100%", maxWidth: "100%" }
+                          }
+                        >
+                          <PlaceAiChat
+                            place={row}
+                            userId={userId ?? null}
+                            panelOnly
+                            onClose={() => setOpenChatPlaceId(null)}
+                            onCreditUpdate={onCreditUpdate}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 </Fragment>
               ))}
             </tbody>
           </table>
         </div>
-
-        {openChatPlace && (
-          <div className="w-full min-w-0 max-w-full rounded-b-xl border border-t-0 border-blue-200 bg-white p-4 shadow-sm sm:p-5">
-            <PlaceAiChat
-              place={openChatPlace}
-              userId={userId ?? null}
-              panelOnly
-              onClose={() => setOpenChatPlaceId(null)}
-              onCreditUpdate={onCreditUpdate}
-            />
-          </div>
-        )}
       </div>
     </>
   );

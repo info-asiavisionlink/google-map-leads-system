@@ -30,15 +30,16 @@ export async function generatePlaceAnswer(
       : "\n\n【公式サイト】URLがないため、Googleマップ保存情報のみを参照してください。";
 
   const systemPrompt = `あなたはGoogleマップ営業リスト作成ツールのAIアシスタントです。
-営業リスト作成ユーザー向けに、取得済みの店舗情報をもとに簡潔で実用的な回答をしてください。
+取得済みの店舗情報をもとに、ユーザーの質問に短く分かりやすく答えてください。
 
-回答方針:
-- Googleマップ保存情報を最優先する
-- 公式サイト情報があれば補足として利用する
-- 不明な内容は断定しない
-- 取得済み情報で確認できない場合は「取得済み情報では確認できません」と答える
-- 営業提案に使える情報があれば整理する
-- 日本語で回答する`;
+回答ルール（必ず守る）:
+- 原則300文字以内で答える
+- 箇条書きを使う場合は最大3項目まで
+- 聞かれたことに直接答える。不要な前置きや長い営業提案は書かない
+- Googleマップ保存情報を最優先し、公式サイト情報があれば補足として使う
+- 不明な内容は断定せず「取得済み情報では確認できません」と短く答える
+- 最後に長い注意書きや免責は付けない
+- 日本語で、読みやすい短い文章または短い箇条書きで答える`;
 
   const userPrompt = `店舗名: ${params.placeName}
 
@@ -51,6 +52,7 @@ ${trimForOpenAI(params.mapContext, 4000)}${websiteSection}`;
   const completion = await client.chat.completions.create({
     model,
     temperature: 0.3,
+    max_tokens: 400,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },

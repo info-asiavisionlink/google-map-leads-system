@@ -1,3 +1,5 @@
+"use client";
+
 import {
   OpeningHoursDisplay,
   ReviewsDisplay,
@@ -12,6 +14,8 @@ type ResultCardProps = {
   index: number;
   userId?: string | null;
   onCreditUpdate?: (credit: number) => void;
+  isChatOpen?: boolean;
+  onChatOpenChange?: (open: boolean) => void;
 };
 
 function LinkButton({
@@ -55,7 +59,11 @@ export default function ResultCard({
   index,
   userId,
   onCreditUpdate,
+  isChatOpen,
+  onChatOpenChange,
 }: ResultCardProps) {
+  const controlled = isChatOpen != null && onChatOpenChange != null;
+
   return (
     <article className="min-w-0 max-w-full overflow-hidden rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
       <div className="mb-3 flex min-w-0 items-start justify-between gap-2">
@@ -106,11 +114,35 @@ export default function ResultCard({
         </Field>
       </dl>
 
-      <PlaceAiChat
-        place={row}
-        userId={userId ?? null}
-        onCreditUpdate={onCreditUpdate}
-      />
+      <div className="mt-5 w-full min-w-0 max-w-full">
+        {controlled ? (
+          <>
+            {!isChatOpen ? (
+              <button
+                type="button"
+                onClick={() => onChatOpenChange(true)}
+                className="flex h-12 w-full items-center justify-center rounded-xl border-2 border-blue-200 bg-gradient-to-r from-blue-50 to-cyan-50 px-6 text-base font-semibold text-blue-800 transition hover:from-blue-100 hover:to-cyan-100"
+              >
+                AIに質問する
+              </button>
+            ) : (
+              <PlaceAiChat
+                place={row}
+                userId={userId ?? null}
+                panelOnly
+                onClose={() => onChatOpenChange(false)}
+                onCreditUpdate={onCreditUpdate}
+              />
+            )}
+          </>
+        ) : (
+          <PlaceAiChat
+            place={row}
+            userId={userId ?? null}
+            onCreditUpdate={onCreditUpdate}
+          />
+        )}
+      </div>
     </article>
   );
 }
